@@ -51,6 +51,13 @@
             <option value="yard_light">Yard Light</option>
           </select>
         </label>
+        <label class="control-block radius-block">
+          <span>Render</span>
+          <select id="renderModeSelect">
+            <option value="cad" selected>CAD</option>
+            <option value="realistic">Realistic</option>
+          </select>
+        </label>
         <button id="resetBtn" class="action-btn ghost">Reset Time</button>
       </div>
     </header>
@@ -86,6 +93,16 @@
             </select>
           </label>
           <button id="resetPartAnchorBtn" class="action-btn ghost" type="button">Reset Anchor</button>
+        </section>
+        <section id="layerMenu" class="select-filter-menu layer-menu" aria-label="Display Layers">
+          <h3>Layers</h3>
+          <label><input id="layerGrid" type="checkbox" checked /> Grid</label>
+          <label><input id="layerTrack" type="checkbox" checked /> Track</label>
+          <label><input id="layerStations" type="checkbox" checked /> Stations</label>
+          <label><input id="layerTrains" type="checkbox" checked /> Trains</label>
+          <label><input id="layerDimensions" type="checkbox" checked /> Dimensions</label>
+          <label><input id="layerCurveInfo" type="checkbox" checked /> Curve R/Angle</label>
+          <label><input id="layerWarnings" type="checkbox" checked /> Warnings</label>
         </section>
         <canvas id="mapCanvas" width="980" height="620"></canvas>
         <div class="hint" id="hintText"></div>
