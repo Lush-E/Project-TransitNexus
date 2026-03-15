@@ -51,8 +51,12 @@ Double-click `launcher.bat` to open a menu launcher.
 - Curvature diagnostics: segments tighter than `Min Radius` are highlighted in red.
 - `Min Radius` slider: adjust realism threshold for sharp-curve warnings.
 - `Track Preset`: switch rail drawing style (`Ballast Mainline`, `Slab Urban`, `Yard Light`).
+- `Render`: switch rendering mode (`CAD` / `Realistic`).
 - Track rendering now uses ballast + dual rails + sleepers for a more realistic appearance.
 - CAD-like dynamic grid is rendered on the map and follows zoom/pan.
+- `Dims` toggle: show/hide segment length annotations (`xx mm`) in CAD view.
+- `Layers` panel: category-based on/off (`Grid`, `Track`, `Stations`, `Trains`, `Dimensions`, `Curve R/Angle`, `Warnings`).
+- Curve CAD annotation layer: shows faint arc plus `R` radius and turn angle on curved vertices.
 - Undo/Redo: buttons in the top bar, or `Ctrl+Z` / `Ctrl+Y`.
 - Save: `Ctrl+S` (saved to browser local storage in the app).
 - Delete selected: in `Select` mode, press `Delete` or click `Delete Selected`.
