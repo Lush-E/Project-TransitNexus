@@ -1,0 +1,12 @@
+{
+  "name": "project-transitnexus",
+  "version": "0.1.0",
+  "description": "2D railway route and timetable sandbox",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.2.1"
+  }
+}
