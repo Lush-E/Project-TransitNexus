@@ -12,6 +12,14 @@ const speedLabel = document.getElementById('speedLabel');
 const minRadiusRange = document.getElementById('minRadiusRange');
 const minRadiusLabel = document.getElementById('minRadiusLabel');
 const trackPresetSelect = document.getElementById('trackPresetSelect');
+const renderModeSelect = document.getElementById('renderModeSelect');
+const layerGrid = document.getElementById('layerGrid');
+const layerTrack = document.getElementById('layerTrack');
+const layerStations = document.getElementById('layerStations');
+const layerTrains = document.getElementById('layerTrains');
+const layerDimensions = document.getElementById('layerDimensions');
+const layerCurveInfo = document.getElementById('layerCurveInfo');
+const layerWarnings = document.getElementById('layerWarnings');
 const resetBtn = document.getElementById('resetBtn');
 const hintText = document.getElementById('hintText');
 const selectFilterMenu = document.getElementById('selectFilterMenu');
@@ -32,38 +40,57 @@ const STORAGE_KEY = 'transitnexus.project.v1';
 
 const TRACK_PRESETS = {
   ballast_main: {
-    ballastColor: '#4c5f6b',
-    ballastWidth: 11,
-    railColor: '#c9d4dc',
-    railWidth: 1.8,
-    railGap: 3.4,
-    sleeperColor: '#7d5e4c',
-    sleeperWidth: 7.5,
-    sleeperThickness: 1.4,
-    sleeperStep: 8.8
+    ballastOuter: '#2f3438',
+    ballastMid: '#4a4f54',
+    ballastInner: '#666b71',
+    ballastWidth: 8.2,
+    railBaseColor: '#a7afb7',
+    railHighlightColor: '#d8dee4',
+    railWidth: 1.25,
+    railGap: 2.7,
+    sleeperColor: '#5a4334',
+    sleeperWidth: 6.2,
+    sleeperThickness: 1.05,
+    sleeperStep: 7.2
   },
   slab_urban: {
-    ballastColor: '#6f7d89',
-    ballastWidth: 9.5,
-    railColor: '#e0ebf2',
-    railWidth: 1.8,
-    railGap: 3.3,
-    sleeperColor: '#95a2ad',
-    sleeperWidth: 6.3,
-    sleeperThickness: 1.1,
-    sleeperStep: 11.2
+    ballastOuter: '#5a646f',
+    ballastMid: '#757f8a',
+    ballastInner: '#8b959f',
+    ballastWidth: 7.4,
+    railBaseColor: '#a9b7c4',
+    railHighlightColor: '#e3ecf4',
+    railWidth: 1.15,
+    railGap: 2.55,
+    sleeperColor: '#8e98a2',
+    sleeperWidth: 5.8,
+    sleeperThickness: 0.95,
+    sleeperStep: 9.4
   },
   yard_light: {
-    ballastColor: '#385767',
-    ballastWidth: 8,
-    railColor: '#b8c9d4',
-    railWidth: 1.5,
-    railGap: 2.9,
-    sleeperColor: '#6f5342',
-    sleeperWidth: 6.6,
-    sleeperThickness: 1.2,
-    sleeperStep: 9.6
+    ballastOuter: '#314751',
+    ballastMid: '#3f5a66',
+    ballastInner: '#4f6a77',
+    ballastWidth: 6.8,
+    railBaseColor: '#a2b3bf',
+    railHighlightColor: '#d0dde8',
+    railWidth: 1.05,
+    railGap: 2.35,
+    sleeperColor: '#5f4738',
+    sleeperWidth: 5.3,
+    sleeperThickness: 0.95,
+    sleeperStep: 8.2
   }
+};
+
+// CAD mode uses JR narrow gauge-inspired parameters in N-gauge drawing scale.
+const JR_NARROW_GAUGE_CAD = {
+  prototypeGaugeMm: 1067,
+  modelGaugeMm: 9.0,
+  railWidthMm: 0.95,
+  sleeperLengthMm: 14.8,
+  sleeperSpacingMm: 4.0,
+  sleeperLineMm: 0.72
 };
 
 const PART_LIBRARY = {
@@ -93,7 +120,18 @@ const state = {
   simSpeed: 8,
   rules: {
     minRadius: 140,
-    trackPreset: 'ballast_main'
+    trackPreset: 'ballast_main',
+    renderMode: 'cad',
+    showDimensions: true,
+    layers: {
+      grid: true,
+      track: true,
+      stations: true,
+      trains: true,
+      dimensions: true,
+      curveInfo: true,
+      warnings: true
+    }
   },
   view: {
     zoom: 1,
@@ -231,8 +269,30 @@ function restoreSnapshot(snap) {
   state.rules = {
     minRadius: 140,
     trackPreset: 'ballast_main',
+    renderMode: 'cad',
+    showDimensions: true,
+    layers: {
+      grid: true,
+      track: true,
+      stations: true,
+      trains: true,
+      dimensions: true,
+      curveInfo: true,
+      warnings: true
+    },
     ...(snap.rules || {})
   };
+  state.rules.layers = {
+    grid: true,
+    track: true,
+    stations: true,
+    trains: true,
+    dimensions: true,
+    curveInfo: true,
+    warnings: true,
+    ...(state.rules.layers || {})
+  };
+  state.rules.showDimensions = state.rules.layers.dimensions;
   state.trackPoints = clone(snap.trackPoints);
   state.trackParts = clone(snap.trackParts || []);
   state.stations = clone(snap.stations);
@@ -256,6 +316,14 @@ function restoreSnapshot(snap) {
   minRadiusRange.value = String(state.rules.minRadius);
   minRadiusLabel.textContent = `R>=${state.rules.minRadius}`;
   trackPresetSelect.value = state.rules.trackPreset;
+  renderModeSelect.value = state.rules.renderMode;
+  layerGrid.checked = state.rules.layers.grid;
+  layerTrack.checked = state.rules.layers.track;
+  layerStations.checked = state.rules.layers.stations;
+  layerTrains.checked = state.rules.layers.trains;
+  layerDimensions.checked = state.rules.layers.dimensions;
+  layerCurveInfo.checked = state.rules.layers.curveInfo;
+  layerWarnings.checked = state.rules.layers.warnings;
   partTypeSelect.value = state.partBuilder.partType;
   curveTurnSelect.value = state.partBuilder.curveTurn;
   updateTrackDiagnostics();
@@ -827,28 +895,141 @@ function updateTrains() {
 }
 
 function drawTrack() {
+  if (state.rules.renderMode === 'cad') {
+    drawTrackCad();
+    return;
+  }
+
+  drawTrackRealistic();
+}
+
+function drawTrackCad() {
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
+    return;
+  }
+
+  const renderPts = samplePolylineBySpacing(pts, 6);
+  const railOffset = JR_NARROW_GAUGE_CAD.modelGaugeMm / 2;
+
+  drawCadSleepers(renderPts, JR_NARROW_GAUGE_CAD);
+  drawOffsetRail(renderPts, railOffset, '#f6fbff', JR_NARROW_GAUGE_CAD.railWidthMm);
+  drawOffsetRail(renderPts, -railOffset, '#f6fbff', JR_NARROW_GAUGE_CAD.railWidthMm);
+}
+
+function drawCadSleepers(points, spec) {
+  if (!points || points.length < 2) {
+    return;
+  }
+
+  if (state.view.zoom < 0.65) {
+    return;
+  }
+
+  ctx.strokeStyle = 'rgba(227, 235, 242, 0.55)';
+  ctx.lineWidth = spec.sleeperLineMm;
+  ctx.lineCap = 'butt';
+
+  const half = spec.sleeperLengthMm / 2;
+  const step = spec.sleeperSpacingMm;
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.0001) {
+      continue;
+    }
+
+    const tx = dx / len;
+    const ty = dy / len;
+    const nx = -ty;
+    const ny = tx;
+
+    for (let s = 0; s <= len; s += step) {
+      const px = a.x + tx * s;
+      const py = a.y + ty * s;
+      ctx.beginPath();
+      ctx.moveTo(px - nx * half, py - ny * half);
+      ctx.lineTo(px + nx * half, py + ny * half);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawTrackRealistic() {
   const pts = state.trackPoints;
   if (pts.length < 2) {
     return;
   }
 
   const preset = TRACK_PRESETS[state.rules.trackPreset] || TRACK_PRESETS.ballast_main;
+  const renderPts = samplePolylineBySpacing(pts, 6);
 
-  ctx.strokeStyle = preset.ballastColor;
-  ctx.lineWidth = preset.ballastWidth;
+  // Ballast shoulder and center layers
+  ctx.strokeStyle = preset.ballastOuter;
+  ctx.lineWidth = preset.ballastWidth + 4.5;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-
   ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i += 1) {
-    ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.moveTo(renderPts[0].x, renderPts[0].y);
+  for (let i = 1; i < renderPts.length; i += 1) {
+    ctx.lineTo(renderPts[i].x, renderPts[i].y);
   }
   ctx.stroke();
 
-  drawSleepers(pts, preset);
-  drawOffsetRail(pts, preset.railGap, preset.railColor, preset.railWidth);
-  drawOffsetRail(pts, -preset.railGap, preset.railColor, preset.railWidth);
+  ctx.strokeStyle = preset.ballastMid;
+  ctx.lineWidth = preset.ballastWidth;
+  ctx.beginPath();
+  ctx.moveTo(renderPts[0].x, renderPts[0].y);
+  for (let i = 1; i < renderPts.length; i += 1) {
+    ctx.lineTo(renderPts[i].x, renderPts[i].y);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = preset.ballastInner;
+  ctx.lineWidth = preset.ballastWidth - 3.2;
+  ctx.beginPath();
+  ctx.moveTo(renderPts[0].x, renderPts[0].y);
+  for (let i = 1; i < renderPts.length; i += 1) {
+    ctx.lineTo(renderPts[i].x, renderPts[i].y);
+  }
+  ctx.stroke();
+
+  drawSleepers(renderPts, preset);
+  drawOffsetRail(renderPts, preset.railGap, preset.railBaseColor, preset.railWidth + 0.8);
+  drawOffsetRail(renderPts, -preset.railGap, preset.railBaseColor, preset.railWidth + 0.8);
+  drawOffsetRail(renderPts, preset.railGap, preset.railHighlightColor, preset.railWidth);
+  drawOffsetRail(renderPts, -preset.railGap, preset.railHighlightColor, preset.railWidth);
+}
+
+function samplePolylineBySpacing(points, spacing) {
+  if (!points || points.length < 2) {
+    return points || [];
+  }
+
+  const out = [points[0]];
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.0001) {
+      continue;
+    }
+
+    const steps = Math.max(1, Math.round(len / spacing));
+    for (let j = 1; j <= steps; j += 1) {
+      const t = j / steps;
+      out.push({
+        x: a.x + dx * t,
+        y: a.y + dy * t
+      });
+    }
+  }
+  return out;
 }
 
 function drawOffsetRail(points, offset, color, width) {
@@ -914,6 +1095,16 @@ function drawSleepers(points, preset) {
       ctx.moveTo(px - nx * half, py - ny * half);
       ctx.lineTo(px + nx * half, py + ny * half);
       ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(222, 195, 166, 0.25)';
+      ctx.lineWidth = Math.max(0.6, preset.sleeperThickness - 0.5);
+      ctx.beginPath();
+      ctx.moveTo(px - nx * (half * 0.45), py - ny * (half * 0.45));
+      ctx.lineTo(px + nx * (half * 0.45), py + ny * (half * 0.45));
+      ctx.stroke();
+
+      ctx.strokeStyle = preset.sleeperColor;
+      ctx.lineWidth = preset.sleeperThickness;
     }
   }
 }
@@ -945,6 +1136,129 @@ function drawTrackWarnings() {
     ctx.beginPath();
     ctx.arc(b.x, b.y, 6, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+function drawTrackDimensions() {
+  if (!state.rules.layers.dimensions) {
+    return;
+  }
+
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
+    return;
+  }
+
+  ctx.font = '600 10px Rajdhani';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let i = 1; i < pts.length; i += 1) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const len = distance(a, b);
+    if (len < 18) {
+      continue;
+    }
+
+    let angle = Math.atan2(b.y - a.y, b.x - a.x);
+    if (angle > Math.PI / 2 || angle < -Math.PI / 2) {
+      angle += Math.PI;
+    }
+
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const label = `${Math.round(len)} mm`;
+
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.rotate(angle);
+
+    const textWidth = ctx.measureText(label).width;
+    const padX = 4;
+    const boxW = textWidth + padX * 2;
+    const boxH = 11;
+
+    ctx.fillStyle = 'rgba(10, 14, 18, 0.8)';
+    ctx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
+    ctx.strokeStyle = 'rgba(186, 205, 219, 0.46)';
+    ctx.lineWidth = 0.75;
+    ctx.strokeRect(-boxW / 2, -boxH / 2, boxW, boxH);
+
+    ctx.fillStyle = '#e8f1f7';
+    ctx.fillText(label, 0, 0.5);
+    ctx.restore();
+  }
+}
+
+function drawCurveAnnotations() {
+  if (!state.rules.layers.curveInfo) {
+    return;
+  }
+
+  const pts = state.trackPoints;
+  if (pts.length < 3) {
+    return;
+  }
+
+  ctx.font = '600 9px Rajdhani';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  for (let i = 1; i < pts.length - 1; i += 1) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const c = pts[i + 1];
+
+    const v1x = a.x - b.x;
+    const v1y = a.y - b.y;
+    const v2x = c.x - b.x;
+    const v2y = c.y - b.y;
+    const l1 = Math.hypot(v1x, v1y);
+    const l2 = Math.hypot(v2x, v2y);
+    if (l1 < 1 || l2 < 1) {
+      continue;
+    }
+
+    const a1 = Math.atan2(v1y, v1x);
+    const a2 = Math.atan2(v2y, v2x);
+    let d = a2 - a1;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    if (Math.abs(d) < 0.08) {
+      continue;
+    }
+
+    const turnDeg = Math.abs(d) * 180 / Math.PI;
+    const radius = circumcircleRadius(a, b, c);
+    if (!Number.isFinite(radius) || radius > 99999) {
+      continue;
+    }
+
+    const arcR = 14;
+    const end = a1 + d;
+    const ccw = d < 0;
+
+    ctx.strokeStyle = 'rgba(210, 227, 238, 0.45)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, arcR, a1, end, ccw);
+    ctx.stroke();
+
+    const midA = a1 + d * 0.5;
+    const tx = b.x + Math.cos(midA) * (arcR + 16);
+    const ty = b.y + Math.sin(midA) * (arcR + 16);
+    const label = `R${Math.round(radius)} / ${Math.round(turnDeg)}deg`;
+    const tw = ctx.measureText(label).width;
+    const bw = tw + 6;
+    const bh = 10;
+
+    ctx.fillStyle = 'rgba(10, 14, 18, 0.8)';
+    ctx.fillRect(tx - bw / 2, ty - bh / 2, bw, bh);
+    ctx.strokeStyle = 'rgba(180, 202, 217, 0.35)';
+    ctx.strokeRect(tx - bw / 2, ty - bh / 2, bw, bh);
+    ctx.fillStyle = '#eef4f9';
+    ctx.fillText(label, tx, ty + 0.4);
   }
 }
 
@@ -987,7 +1301,7 @@ function drawCadGrid() {
   const startXMinor = ((state.view.offsetX % minorPx) + minorPx) % minorPx;
   const startYMinor = ((state.view.offsetY % minorPx) + minorPx) % minorPx;
 
-  ctx.strokeStyle = 'rgba(180, 210, 230, 0.08)';
+  ctx.strokeStyle = 'rgba(235, 240, 245, 0.1)';
   ctx.lineWidth = 1;
   for (let x = startXMinor; x < canvas.width; x += minorPx) {
     ctx.beginPath();
@@ -1004,7 +1318,7 @@ function drawCadGrid() {
 
   const startXMajor = ((state.view.offsetX % majorPx) + majorPx) % majorPx;
   const startYMajor = ((state.view.offsetY % majorPx) + majorPx) % majorPx;
-  ctx.strokeStyle = 'rgba(210, 235, 250, 0.18)';
+  ctx.strokeStyle = 'rgba(235, 242, 248, 0.24)';
   for (let x = startXMajor; x < canvas.width; x += majorPx) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
@@ -1022,7 +1336,7 @@ function drawCadGrid() {
 function drawBuildingTrack() {
   const pts = state.buildingTrack;
   if (pts.length > 1) {
-    ctx.strokeStyle = '#8fa6b7';
+    ctx.strokeStyle = '#e6eef4';
     ctx.setLineDash([8, 8]);
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1040,23 +1354,23 @@ function drawBuildingTrack() {
 
   if (pts.length > 0) {
     const start = pts[0];
-    ctx.fillStyle = '#41f0a7';
+    ctx.fillStyle = '#eaf3f9';
     ctx.beginPath();
     ctx.arc(start.x, start.y, 7, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#c8ffe8';
+    ctx.strokeStyle = '#f5fbff';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(start.x, start.y, 12, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.fillStyle = '#b8f6ff';
+    ctx.fillStyle = '#dce8f1';
     ctx.font = '700 11px Orbitron';
     ctx.fillText('START', start.x + 14, start.y - 14);
   }
 
   for (const p of pts) {
-    ctx.fillStyle = '#8ef4ff';
+    ctx.fillStyle = '#d6e4ee';
     ctx.beginPath();
     ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
     ctx.fill();
@@ -1066,7 +1380,7 @@ function drawBuildingTrack() {
     const preview = state.trackPreviewPoint;
     const from = pts.length > 0 ? pts[pts.length - 1] : preview;
     if (pts.length > 0) {
-      ctx.strokeStyle = '#41f0a7';
+      ctx.strokeStyle = '#f0f6fb';
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 5]);
       ctx.beginPath();
@@ -1076,7 +1390,7 @@ function drawBuildingTrack() {
       ctx.setLineDash([]);
     }
 
-    ctx.fillStyle = 'rgba(65, 240, 167, 0.9)';
+    ctx.fillStyle = 'rgba(238, 245, 250, 0.9)';
     ctx.beginPath();
     ctx.arc(preview.x, preview.y, 5, 0, Math.PI * 2);
     ctx.fill();
@@ -1157,16 +1471,28 @@ function drawClock() {
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawCadGrid();
+  if (state.rules.layers.grid) {
+    drawCadGrid();
+  }
 
   ctx.save();
   ctx.setTransform(state.view.zoom, 0, 0, state.view.zoom, state.view.offsetX, state.view.offsetY);
-  drawTrack();
-  drawTrackWarnings();
+  if (state.rules.layers.track) {
+    drawTrack();
+    drawTrackDimensions();
+    drawCurveAnnotations();
+  }
+  if (state.rules.layers.warnings) {
+    drawTrackWarnings();
+  }
   drawBuildingTrack();
   drawPartPreview();
-  drawStations();
-  drawTrains();
+  if (state.rules.layers.stations) {
+    drawStations();
+  }
+  if (state.rules.layers.trains) {
+    drawTrains();
+  }
   drawSelectionRect();
   ctx.restore();
 
@@ -1564,6 +1890,47 @@ trackPresetSelect.addEventListener('change', () => {
   render();
 });
 
+renderModeSelect.addEventListener('change', () => {
+  state.rules.renderMode = renderModeSelect.value;
+  render();
+});
+
+layerGrid.addEventListener('change', () => {
+  state.rules.layers.grid = layerGrid.checked;
+  render();
+});
+
+layerTrack.addEventListener('change', () => {
+  state.rules.layers.track = layerTrack.checked;
+  render();
+});
+
+layerStations.addEventListener('change', () => {
+  state.rules.layers.stations = layerStations.checked;
+  render();
+});
+
+layerTrains.addEventListener('change', () => {
+  state.rules.layers.trains = layerTrains.checked;
+  render();
+});
+
+layerDimensions.addEventListener('change', () => {
+  state.rules.layers.dimensions = layerDimensions.checked;
+  state.rules.showDimensions = state.rules.layers.dimensions;
+  render();
+});
+
+layerCurveInfo.addEventListener('change', () => {
+  state.rules.layers.curveInfo = layerCurveInfo.checked;
+  render();
+});
+
+layerWarnings.addEventListener('change', () => {
+  state.rules.layers.warnings = layerWarnings.checked;
+  render();
+});
+
 resetBtn.addEventListener('click', () => {
   state.simMinute = 360;
   updateTrains();
@@ -1654,6 +2021,14 @@ syncSelectionFilterMenu();
 syncPartPaletteMenu();
 minRadiusLabel.textContent = `R>=${state.rules.minRadius}`;
 trackPresetSelect.value = state.rules.trackPreset;
+renderModeSelect.value = state.rules.renderMode;
+layerGrid.checked = state.rules.layers.grid;
+layerTrack.checked = state.rules.layers.track;
+layerStations.checked = state.rules.layers.stations;
+layerTrains.checked = state.rules.layers.trains;
+layerDimensions.checked = state.rules.layers.dimensions;
+layerCurveInfo.checked = state.rules.layers.curveInfo;
+layerWarnings.checked = state.rules.layers.warnings;
 partTypeSelect.value = state.partBuilder.partType;
 curveTurnSelect.value = state.partBuilder.curveTurn;
 if (!loadProjectFromLocal()) {
