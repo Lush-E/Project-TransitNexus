@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TransitNexus</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <p class="brand-kicker">RAIL OPERATION CONSOLE</p>
+        <h1>TransitNexus</h1>
+      </div>
+      <div class="controls">
+        <label class="control-block">
+          <span>Mode</span>
+          <select id="modeSelect">
+            <option value="select">Select</option>
+            <option value="part">Part</option>
+            <option value="track">Track</option>
+            <option value="station">Station</option>
+            <option value="train">Train</option>
+          </select>
+        </label>
+        <button id="undoBtn" class="action-btn ghost">Undo</button>
+        <button id="redoBtn" class="action-btn ghost">Redo</button>
+        <button id="deleteSelectedBtn" class="action-btn ghost">Delete Selected</button>
+        <button id="playBtn" class="action-btn">Play</button>
+        <label class="control-block speed-block">
+          <span>Speed</span>
+          <input id="speedRange" type="range" min="1" max="30" value="8" />
+          <span id="speedLabel">x8</span>
+        </label>
+        <label class="control-block radius-block">
+          <span>Min Radius</span>
+          <input id="minRadiusRange" type="range" min="40" max="400" value="140" />
+          <span id="minRadiusLabel">R>=140</span>
+        </label>
+        <label class="control-block radius-block">
+          <span>Track Preset</span>
+          <select id="trackPresetSelect">
+            <option value="ballast_main">Ballast Mainline</option>
+            <option value="slab_urban">Slab Urban</option>
+            <option value="yard_light">Yard Light</option>
+          </select>
+        </label>
+        <button id="resetBtn" class="action-btn ghost">Reset Time</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="canvas-panel">
+        <div class="panel-header">
+          <h2>Network Map</h2>
+          <span class="signal-dot"></span>
+        </div>
+        <section id="selectFilterMenu" class="select-filter-menu" aria-label="Selection Targets">
+          <h3>Selection Targets</h3>
+          <label><input id="filterStation" type="checkbox" checked /> Station</label>
+          <label><input id="filterSignal" type="checkbox" /> Signal</label>
+          <label><input id="filterObject" type="checkbox" /> Object</label>
+          <label><input id="filterTrain" type="checkbox" checked /> Train</label>
+        </section>
+        <section id="partPaletteMenu" class="select-filter-menu part-palette" aria-label="Track Parts">
+          <h3>Track Parts</h3>
+          <label>
+            <span>Part Type</span>
+            <select id="partTypeSelect">
+              <option value="straight_124">Straight 124</option>
+              <option value="curve_r140_45">Curve R140 45deg</option>
+              <option value="curve_r280_45">Curve R280 45deg</option>
+            </select>
+          </label>
+          <label>
+            <span>Curve Turn</span>
+            <select id="curveTurnSelect">
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </label>
+          <button id="resetPartAnchorBtn" class="action-btn ghost" type="button">Reset Anchor</button>
+        </section>
+        <canvas id="mapCanvas" width="980" height="620"></canvas>
+        <div class="hint" id="hintText"></div>
+      </section>
+
+      <aside class="side-panel">
+        <section class="widget">
+          <h2>Stations</h2>
+          <ul id="stationList"></ul>
+        </section>
+
+        <section class="widget">
+          <h2>Create Train</h2>
+          <form id="trainForm">
+            <label>
+              <span>Name</span>
+              <input id="trainName" type="text" value="T001" required />
+            </label>
+            <label>
+              <span>Stops (station@hh:mm, comma separated)</span>
+              <textarea id="trainStops" rows="5" placeholder="S1@06:00, S2@06:03, S3@06:07"></textarea>
+            </label>
+            <button type="submit" class="action-btn">Add Train</button>
+          </form>
+          <ul id="trainList"></ul>
+        </section>
+      </aside>
+    </main>
+
+    <script src="./main.js"></script>
+  </body>
+</html>
