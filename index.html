@@ -10,21 +10,31 @@
     <header class="toolbar">
       <h1>Rail Draft Prototype</h1>
       <div class="tools">
+        <button data-mode="select" class="tool">Select</button>
         <button data-mode="track" class="tool active">Track</button>
         <button data-mode="platform" class="tool">Platform</button>
         <button data-mode="train" class="tool">Train</button>
         <button data-mode="car" class="tool">Add Car</button>
         <button data-mode="erase" class="tool">Erase</button>
+        <button id="layerMenuBtn" class="tool">Layers</button>
         <button id="clearBtn" class="tool ghost">Clear</button>
       </div>
+      <section id="layerPanel" class="layer-panel" aria-label="Display Layers" hidden>
+        <label><input id="layerGrid" type="checkbox" checked /> Grid</label>
+        <label><input id="layerTrack" type="checkbox" checked /> Track</label>
+        <label><input id="layerClearance" type="checkbox" checked /> Clearance</label>
+        <label><input id="layerPlatform" type="checkbox" checked /> Platform</label>
+        <label><input id="layerTrain" type="checkbox" checked /> Train</label>
+        <label><input id="layerRuler" type="checkbox" checked /> Ruler</label>
+      </section>
       <p id="hint">Track: 始点をクリックして終点をクリック</p>
       <section class="track-settings" aria-label="Track Laying Settings">
         <label>
-          Dot Pitch
+          Grid Pitch
           <select id="gridSizeSelect">
-            <option value="1" selected>1 dot (10cm)</option>
-            <option value="2">2 dot (20cm)</option>
-            <option value="5">5 dot (50cm)</option>
+            <option value="1" selected>1 cell (1m)</option>
+            <option value="2">2 cell (2m)</option>
+            <option value="5">5 cell (5m)</option>
           </select>
         </label>
         <label class="inline-check">
@@ -37,13 +47,13 @@
         </label>
         <label>
           Track Width
-          <input id="trackWidthRange" type="range" min="0.6" max="3.2" step="0.1" value="1.4" />
-          <span id="trackWidthLabel">1.4 dot</span>
+          <input id="trackWidthRange" type="range" min="0.6" max="3.2" step="0.1" value="1.8" />
+          <span id="trackWidthLabel">1.8m</span>
         </label>
         <label>
           Min Length
           <input id="minTrackLenRange" type="range" min="1" max="20" step="0.5" value="3" />
-          <span id="minTrackLenLabel">3.0 dot</span>
+          <span id="minTrackLenLabel">3.0m</span>
         </label>
       </section>
     </header>
