@@ -34,6 +34,30 @@ function Install-Dependencies {
     Write-Host "Dependencies installed." -ForegroundColor Green
 }
 
+function Get-LocalElectronCmdPath {
+    return Join-Path $PSScriptRoot "node_modules\.bin\electron.cmd"
+}
+
+function Ensure-ElectronInstalled {
+    if (-not (Test-Tool "npm.cmd")) {
+        throw "npm.cmd not found. Please install Node.js first."
+    }
+
+    $electronCmd = Get-LocalElectronCmdPath
+    if (Test-Path $electronCmd) {
+        return $electronCmd
+    }
+
+    Write-Host "Electron not found in node_modules. Installing dependencies..." -ForegroundColor Yellow
+    Invoke-Step -File "npm.cmd" -Arguments @("install", "--include=dev") | Out-Host
+
+    if (-not (Test-Path $electronCmd)) {
+        throw "electron installation was not found after npm install."
+    }
+
+    return $electronCmd
+}
+
 function Update-And-Install {
     if (Test-Tool "git") {
         Invoke-Step -File "git" -Arguments @("pull")
@@ -46,11 +70,8 @@ function Update-And-Install {
 }
 
 function Start-App {
-    if (-not (Test-Tool "npm.cmd")) {
-        throw "npm.cmd not found. Please install Node.js first."
-    }
-
-    Invoke-Step -File "npm.cmd" -Arguments @("start")
+    [string]$electronCmd = Ensure-ElectronInstalled
+    Invoke-Step -File $electronCmd -Arguments @(".")
 }
 
 try {
