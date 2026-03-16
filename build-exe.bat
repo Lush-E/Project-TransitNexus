@@ -14,7 +14,7 @@ pushd "%BASE_DIR%"
 
 if not exist "node_modules" (
   echo Installing dependencies...
-  call npm.cmd install
+  call npm.cmd install --include=dev
   if errorlevel 1 (
     echo [ERROR] npm install failed.
     popd
