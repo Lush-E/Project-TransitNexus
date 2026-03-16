@@ -14,7 +14,7 @@ if not exist "%PKG%" (
 if not exist "%NODE_MODULES%" (
   echo Installing dependencies...
   pushd "%BASE_DIR%"
-  call npm install
+  call npm.cmd install
   if errorlevel 1 (
     echo [ERROR] npm install failed.
     popd
@@ -25,7 +25,7 @@ if not exist "%NODE_MODULES%" (
 )
 
 pushd "%BASE_DIR%"
-call npm run start
+call npm.cmd run start
 set "EXIT_CODE=%ERRORLEVEL%"
 popd
 
