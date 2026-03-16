@@ -19,8 +19,8 @@ const trackWidthLabel = document.getElementById('trackWidthLabel');
 const minTrackLenRange = document.getElementById('minTrackLenRange');
 const minTrackLenLabel = document.getElementById('minTrackLenLabel');
 
-const DOT_CM = 100; // 1 grid cell = 1m
-const CLEARANCE_HALF_WIDTH_DOT = 1.5; // 1500mm each side (3000mm total)
+const DOT_CM = 50; // 1 grid cell = 50cm
+const CLEARANCE_HALF_WIDTH_DOT = 3; // 1500mm each side (3000mm total)
 const TRAIN_DIM = {
   carLengthDot: 20,
   carHeightDot: 2.8,
@@ -55,7 +55,7 @@ const state = {
     gridSize: 1,
     snap: true,
     ortho: false,
-    trackWidth: 1.8,
+    trackWidth: 2,
     minTrackLength: 3
   },
   layers: {
@@ -187,6 +187,42 @@ function collectTrackNodeCounts() {
   return counts;
 }
 
+function getTrackNodes() {
+  const nodes = new Map();
+  for (const seg of state.tracks) {
+    nodes.set(endpointKey(seg.a), seg.a);
+    nodes.set(endpointKey(seg.b), seg.b);
+  }
+  return Array.from(nodes.values());
+}
+
+function findNearestTrackNode(point) {
+  const nodes = getTrackNodes();
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  // Weak snapping: helps joining nodes without being too aggressive.
+  const snapRadiusWorld = clamp(12 / Math.max(0.0001, state.view.zoom), 0.35, 1.2);
+  let best = null;
+  for (const node of nodes) {
+    const d = distance(point, node);
+    if (d <= snapRadiusWorld && (!best || d < best.dist)) {
+      best = { x: node.x, y: node.y, dist: d };
+    }
+  }
+  return best;
+}
+
+function resolveTrackPoint(rawPoint, startPoint) {
+  const constrained = applyTrackConstraint(rawPoint, startPoint);
+  const nearNode = findNearestTrackNode(constrained);
+  if (nearNode) {
+    return { x: nearNode.x, y: nearNode.y };
+  }
+  return constrained;
+}
+
 function drawGrid() {
   const grid = state.settings.gridSize;
   const majorEvery = 5;
@@ -304,6 +340,8 @@ function drawTracks() {
   const baseScreenWidth = state.settings.trackWidth * state.view.zoom;
   const trackScreenWidth = Math.max(baseScreenWidth, 2.8);
   const trackWorldWidth = trackScreenWidth / state.view.zoom;
+  const centerScreenWidth = clamp(trackScreenWidth * 0.24, 1.4, 3.6);
+  const centerWorldWidth = centerScreenWidth / state.view.zoom;
   const previewScreenWidth = Math.max(trackScreenWidth * 0.72, 1.8);
   const previewWorldWidth = previewScreenWidth / state.view.zoom;
   const nodeCounts = collectTrackNodeCounts();
@@ -317,6 +355,35 @@ function drawTracks() {
     ctx.moveTo(seg.a.x, seg.a.y);
     ctx.lineTo(seg.b.x, seg.b.y);
     ctx.stroke();
+  }
+
+  // Track centerline for clearer alignment.
+  ctx.strokeStyle = 'rgba(233, 248, 255, 0.98)';
+  ctx.lineWidth = centerWorldWidth;
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'round';
+  for (const seg of state.tracks) {
+    ctx.beginPath();
+    ctx.moveTo(seg.a.x, seg.a.y);
+    ctx.lineTo(seg.b.x, seg.b.y);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(233, 248, 255, 0.98)';
+  const centerJoinRadius = centerWorldWidth * 0.54;
+  for (const seg of state.tracks) {
+    const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
+    const bCount = nodeCounts.get(endpointKey(seg.b)) || 0;
+    if (aCount >= 2) {
+      ctx.beginPath();
+      ctx.arc(seg.a.x, seg.a.y, centerJoinRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (bCount >= 2) {
+      ctx.beginPath();
+      ctx.arc(seg.b.x, seg.b.y, centerJoinRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   // Keep rounded appearance at branch/connection nodes only.
@@ -701,7 +768,7 @@ canvas.addEventListener('mousemove', (ev) => {
     return;
   }
 
-  const p = state.mode === 'track' ? applyTrackConstraint(raw, state.draftingTrackStart) : quantizePoint(raw);
+  const p = state.mode === 'track' ? resolveTrackPoint(raw, state.draftingTrackStart) : quantizePoint(raw);
   state.mousePreview = p;
   if (state.mode === 'platform' && state.draftingPlatformStart) {
     state.draftingPlatformCurrent = p;
@@ -736,7 +803,7 @@ canvas.addEventListener('mousedown', (ev) => {
     return;
   }
 
-  const p = state.mode === 'track' ? applyTrackConstraint(raw, state.draftingTrackStart) : quantizePoint(raw);
+  const p = state.mode === 'track' ? resolveTrackPoint(raw, state.draftingTrackStart) : quantizePoint(raw);
 
   if (state.mode === 'track') {
     if (!state.draftingTrackStart) {
@@ -874,7 +941,7 @@ for (const btn of modeButtons) {
 }
 
 function refreshSettingLabels() {
-  trackWidthLabel.textContent = `${state.settings.trackWidth.toFixed(1)}m`;
+  trackWidthLabel.textContent = `${Math.round(state.settings.trackWidth)}m`;
   const cm = Math.round(state.settings.minTrackLength * DOT_CM);
   minTrackLenLabel.textContent = `${state.settings.minTrackLength.toFixed(1)}m (${cm}cm)`;
 }
