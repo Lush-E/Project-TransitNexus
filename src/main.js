@@ -49,9 +49,10 @@ const TRACK_PRESETS = {
     railWidth: 1.25,
     railGap: 2.7,
     sleeperColor: '#5a4334',
-    sleeperWidth: 6.2,
+    sleeperWidth: 14.8,
     sleeperThickness: 1.05,
-    sleeperStep: 7.2
+    sleeperStep: 4.3,
+    sleeperStepCurveFactor: 0.14
   },
   slab_urban: {
     ballastOuter: '#5a646f',
@@ -63,9 +64,10 @@ const TRACK_PRESETS = {
     railWidth: 1.15,
     railGap: 2.55,
     sleeperColor: '#8e98a2',
-    sleeperWidth: 5.8,
+    sleeperWidth: 14.2,
     sleeperThickness: 0.95,
-    sleeperStep: 9.4
+    sleeperStep: 4.6,
+    sleeperStepCurveFactor: 0.1
   },
   yard_light: {
     ballastOuter: '#314751',
@@ -77,19 +79,26 @@ const TRACK_PRESETS = {
     railWidth: 1.05,
     railGap: 2.35,
     sleeperColor: '#5f4738',
-    sleeperWidth: 5.3,
+    sleeperWidth: 14.6,
     sleeperThickness: 0.95,
-    sleeperStep: 8.2
+    sleeperStep: 4.1,
+    sleeperStepCurveFactor: 0.16
   }
 };
 
 // CAD mode uses JR narrow gauge-inspired parameters in N-gauge drawing scale.
 const JR_NARROW_GAUGE_CAD = {
   prototypeGaugeMm: 1067,
+  prototypeSleeperSpacingMinMm: 600,
+  prototypeSleeperSpacingMaxMm: 700,
+  prototypeSleeperLengthMinMm: 2100,
+  prototypeSleeperLengthMaxMm: 2400,
+  modelScale: 150,
   modelGaugeMm: 9.0,
   railWidthMm: 0.95,
   sleeperLengthMm: 14.8,
-  sleeperSpacingMm: 4.0,
+  sleeperSpacingMm: 4.3,
+  sleeperCurveDenseFactor: 0.18,
   sleeperLineMm: 0.72
 };
 
@@ -111,6 +120,13 @@ const PART_LIBRARY = {
     radius: 280,
     angleDeg: 45
   }
+};
+
+const TRACK_CONNECTION_RULES = {
+  snapDistance: 18,
+  minSegmentLength: 6,
+  maxInitialDeflectionDeg: 70,
+  endpointEpsilon: 0.8
 };
 
 const state = {
@@ -149,6 +165,7 @@ const state = {
   stations: [],
   trains: [],
   buildingTrack: [],
+  draftConstraintHeadingRad: null,
   trackPreviewPoint: null,
   selectedStationIds: new Set(),
   selectedTrainIds: new Set(),
@@ -298,6 +315,7 @@ function restoreSnapshot(snap) {
   state.stations = clone(snap.stations);
   state.trains = clone(snap.trains);
   state.buildingTrack = clone(snap.buildingTrack);
+  state.draftConstraintHeadingRad = null;
   const pb = snap.partBuilder || {};
   state.partBuilder.partType = pb.partType || 'straight_124';
   state.partBuilder.curveTurn = pb.curveTurn || 'left';
@@ -529,6 +547,7 @@ function cancelTrackBuilding() {
   }
 
   state.buildingTrack = [];
+  state.draftConstraintHeadingRad = null;
   state.trackPreviewPoint = null;
   commitHistory();
   render();
@@ -682,6 +701,7 @@ function commitTrackDraft() {
   }
 
   state.buildingTrack = [];
+  state.draftConstraintHeadingRad = null;
   state.trackPreviewPoint = null;
   updateTrackDiagnostics();
   commitHistory();
@@ -708,6 +728,94 @@ function distance(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.hypot(dx, dy);
+}
+
+function angleDiffAbs(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return Math.abs(d);
+}
+
+function pointsNear(a, b, eps = TRACK_CONNECTION_RULES.endpointEpsilon) {
+  return distance(a, b) <= eps;
+}
+
+function getTrackEndpointTargets() {
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
+    return [];
+  }
+
+  const first = pts[0];
+  const second = pts[1];
+  const prev = pts[pts.length - 2];
+  const last = pts[pts.length - 1];
+
+  return [
+    {
+      point: { x: first.x, y: first.y },
+      headingRad: Math.atan2(first.y - second.y, first.x - second.x)
+    },
+    {
+      point: { x: last.x, y: last.y },
+      headingRad: Math.atan2(last.y - prev.y, last.x - prev.x)
+    }
+  ];
+}
+
+function snapToTrackEndpoint(point) {
+  const targets = getTrackEndpointTargets();
+  let best = null;
+  for (const t of targets) {
+    const d = distance(point, t.point);
+    if (d <= TRACK_CONNECTION_RULES.snapDistance && (!best || d < best.dist)) {
+      best = { ...t, dist: d };
+    }
+  }
+  return best;
+}
+
+function orientation(a, b, c) {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+  return o1 * o2 < 0 && o3 * o4 < 0;
+}
+
+function isIllegalIntersection(a, b) {
+  const pts = state.trackPoints;
+  for (let i = 1; i < pts.length; i += 1) {
+    const c = pts[i - 1];
+    const d = pts[i];
+
+    if (pointsNear(a, c) || pointsNear(a, d) || pointsNear(b, c) || pointsNear(b, d)) {
+      continue;
+    }
+
+    if (segmentsIntersect(a, b, c, d)) {
+      return true;
+    }
+  }
+
+  const draft = state.buildingTrack;
+  for (let i = 1; i < draft.length - 1; i += 1) {
+    const c = draft[i - 1];
+    const d = draft[i];
+    if (pointsNear(a, c) || pointsNear(a, d) || pointsNear(b, c) || pointsNear(b, d)) {
+      continue;
+    }
+    if (segmentsIntersect(a, b, c, d)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function circumcircleRadius(a, b, c) {
@@ -895,12 +1003,23 @@ function updateTrains() {
 }
 
 function drawTrack() {
-  if (state.rules.renderMode === 'cad') {
-    drawTrackCad();
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
     return;
   }
 
-  drawTrackRealistic();
+  const renderPts = samplePolylineBySpacing(pts, 6);
+  const isCad = state.rules.renderMode === 'cad';
+  ctx.strokeStyle = isCad ? '#bdeaff' : '#d8e3ec';
+  ctx.lineWidth = isCad ? 1.8 : 2.1;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(renderPts[0].x, renderPts[0].y);
+  for (let i = 1; i < renderPts.length; i += 1) {
+    ctx.lineTo(renderPts[i].x, renderPts[i].y);
+  }
+  ctx.stroke();
 }
 
 function drawTrackCad() {
@@ -913,8 +1032,8 @@ function drawTrackCad() {
   const railOffset = JR_NARROW_GAUGE_CAD.modelGaugeMm / 2;
 
   drawCadSleepers(renderPts, JR_NARROW_GAUGE_CAD);
-  drawOffsetRail(renderPts, railOffset, '#f6fbff', JR_NARROW_GAUGE_CAD.railWidthMm);
-  drawOffsetRail(renderPts, -railOffset, '#f6fbff', JR_NARROW_GAUGE_CAD.railWidthMm);
+  drawOffsetRail(renderPts, railOffset, '#c8f3ff', JR_NARROW_GAUGE_CAD.railWidthMm);
+  drawOffsetRail(renderPts, -railOffset, '#c8f3ff', JR_NARROW_GAUGE_CAD.railWidthMm);
 }
 
 function drawCadSleepers(points, spec) {
@@ -926,12 +1045,12 @@ function drawCadSleepers(points, spec) {
     return;
   }
 
-  ctx.strokeStyle = 'rgba(227, 235, 242, 0.55)';
+  ctx.strokeStyle = 'rgba(149, 222, 249, 0.56)';
   ctx.lineWidth = spec.sleeperLineMm;
   ctx.lineCap = 'butt';
 
   const half = spec.sleeperLengthMm / 2;
-  const step = spec.sleeperSpacingMm;
+  const stepBase = spec.sleeperSpacingMm;
   for (let i = 1; i < points.length; i += 1) {
     const a = points[i - 1];
     const b = points[i];
@@ -946,6 +1065,8 @@ function drawCadSleepers(points, spec) {
     const ty = dy / len;
     const nx = -ty;
     const ny = tx;
+    const curveTighten = localCurveIntensity(points, i) * spec.sleeperCurveDenseFactor;
+    const step = stepBase * (1 - curveTighten);
 
     for (let s = 0; s <= len; s += step) {
       const px = a.x + tx * s;
@@ -1061,13 +1182,110 @@ function drawOffsetRail(points, offset, color, width) {
   }
 }
 
+function drawGhostOffsetRail(points, offset, color, width) {
+  if (points.length < 2) {
+    return;
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([5, 4]);
+
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.0001) {
+      continue;
+    }
+
+    const nx = -dy / len;
+    const ny = dx / len;
+    ctx.beginPath();
+    ctx.moveTo(a.x + nx * offset, a.y + ny * offset);
+    ctx.lineTo(b.x + nx * offset, b.y + ny * offset);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+}
+
+function drawGhostSleepers(points, sleeperLength, sleeperStep, color, thickness) {
+  if (points.length < 2) {
+    return;
+  }
+
+  const half = sleeperLength / 2;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = thickness;
+  ctx.lineCap = 'butt';
+
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.0001) {
+      continue;
+    }
+
+    const tx = dx / len;
+    const ty = dy / len;
+    const nx = -ty;
+    const ny = tx;
+
+    for (let s = 0; s <= len; s += sleeperStep) {
+      const px = a.x + tx * s;
+      const py = a.y + ty * s;
+      ctx.beginPath();
+      ctx.moveTo(px - nx * half, py - ny * half);
+      ctx.lineTo(px + nx * half, py + ny * half);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawGhostTrackSegment(from, to) {
+  const poly = samplePolylineBySpacing([from, to], 6);
+  if (poly.length < 2) {
+    return;
+  }
+
+  ctx.strokeStyle = 'rgba(111, 212, 255, 0.92)';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([8, 6]);
+  ctx.beginPath();
+  ctx.moveTo(poly[0].x, poly[0].y);
+  for (let i = 1; i < poly.length; i += 1) {
+    ctx.lineTo(poly[i].x, poly[i].y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawGhostTrackPolyline(points) {
+  if (!points || points.length < 2) {
+    return;
+  }
+  for (let i = 1; i < points.length; i += 1) {
+    drawGhostTrackSegment(points[i - 1], points[i]);
+  }
+}
+
 function drawSleepers(points, preset) {
   if (points.length < 2) {
     return;
   }
 
   const half = preset.sleeperWidth / 2;
-  const step = preset.sleeperStep;
+  const stepBase = preset.sleeperStep;
 
   ctx.strokeStyle = preset.sleeperColor;
   ctx.lineWidth = preset.sleeperThickness;
@@ -1087,6 +1305,8 @@ function drawSleepers(points, preset) {
     const ty = dy / len;
     const nx = -ty;
     const ny = tx;
+    const curveTighten = localCurveIntensity(points, i) * (preset.sleeperStepCurveFactor || 0);
+    const step = stepBase * (1 - curveTighten);
 
     for (let s = 0; s <= len; s += step) {
       const px = a.x + tx * s;
@@ -1107,6 +1327,30 @@ function drawSleepers(points, preset) {
       ctx.lineWidth = preset.sleeperThickness;
     }
   }
+}
+
+function localCurveIntensity(points, segmentIndex) {
+  if (segmentIndex <= 1 || segmentIndex >= points.length - 1) {
+    return 0;
+  }
+
+  const p0 = points[segmentIndex - 1];
+  const p1 = points[segmentIndex];
+  const p2 = points[segmentIndex + 1];
+  const v1x = p1.x - p0.x;
+  const v1y = p1.y - p0.y;
+  const v2x = p2.x - p1.x;
+  const v2y = p2.y - p1.y;
+  const l1 = Math.hypot(v1x, v1y);
+  const l2 = Math.hypot(v2x, v2y);
+  if (l1 < 0.0001 || l2 < 0.0001) {
+    return 0;
+  }
+
+  const dot = (v1x * v2x + v1y * v2y) / (l1 * l2);
+  const clamped = Math.max(-1, Math.min(1, dot));
+  const turn = Math.acos(clamped);
+  return Math.min(1, turn / (Math.PI / 4));
 }
 
 function drawTrackWarnings() {
@@ -1139,8 +1383,41 @@ function drawTrackWarnings() {
   }
 }
 
+function formatCadDimensionLabel(lengthMm) {
+  // Blueprint style: keep integers and omit unit suffix in dense views.
+  return `${Math.round(lengthMm)}`;
+}
+
+function drawDimensionArrow(x, y, tx, ty, size = 6) {
+  const bx = -tx * size;
+  const by = -ty * size;
+  const nx = -ty * size * 0.5;
+  const ny = tx * size * 0.5;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + bx + nx, y + by + ny);
+  ctx.lineTo(x + bx - nx, y + by - ny);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function shouldShowTrackDimensions() {
+  const layers = state.rules.layers;
+  if (!layers.track) {
+    return false;
+  }
+
+  if (layers.dimensions) {
+    return true;
+  }
+
+  // Layer-driven fallback: when track is the only drawing target, show track dimensions.
+  return !layers.stations && !layers.trains && !layers.curveInfo && !layers.warnings;
+}
+
 function drawTrackDimensions() {
-  if (!state.rules.layers.dimensions) {
+  if (!shouldShowTrackDimensions()) {
     return;
   }
 
@@ -1157,36 +1434,76 @@ function drawTrackDimensions() {
     const a = pts[i - 1];
     const b = pts[i];
     const len = distance(a, b);
-    if (len < 18) {
+    if (len < 14) {
       continue;
     }
 
-    let angle = Math.atan2(b.y - a.y, b.x - a.x);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const segLen = Math.hypot(dx, dy);
+    if (segLen < 0.0001) {
+      continue;
+    }
+
+    const tx = dx / segLen;
+    const ty = dy / segLen;
+    let nx = -ty;
+    let ny = tx;
+
+    // Keep dimensions on a consistent visual side for continuous chains.
+    if (ny > 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    const offset = 16 + ((i - 1) % 3) * 12;
+    const extOver = 5;
+    const p1x = a.x + nx * offset;
+    const p1y = a.y + ny * offset;
+    const p2x = b.x + nx * offset;
+    const p2y = b.y + ny * offset;
+
+    // Extension lines from measured geometry to the dimension line.
+    ctx.strokeStyle = 'rgba(132, 206, 236, 0.7)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(a.x + nx * (offset + extOver), a.y + ny * (offset + extOver));
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(b.x + nx * (offset + extOver), b.y + ny * (offset + extOver));
+    ctx.stroke();
+
+    // Dimension line.
+    ctx.strokeStyle = 'rgba(162, 225, 248, 0.86)';
+    ctx.lineWidth = 0.95;
+    ctx.beginPath();
+    ctx.moveTo(p1x, p1y);
+    ctx.lineTo(p2x, p2y);
+    ctx.stroke();
+
+    // Arrowheads at both ends.
+    ctx.fillStyle = 'rgba(182, 234, 252, 0.95)';
+    drawDimensionArrow(p1x, p1y, tx, ty, 5.8);
+    drawDimensionArrow(p2x, p2y, -tx, -ty, 5.8);
+
+    let angle = Math.atan2(ty, tx);
     if (angle > Math.PI / 2 || angle < -Math.PI / 2) {
       angle += Math.PI;
     }
 
-    const mx = (a.x + b.x) / 2;
-    const my = (a.y + b.y) / 2;
-    const label = `${Math.round(len)} mm`;
+    const mx = (p1x + p2x) / 2;
+    const my = (p1y + p2y) / 2;
+    const label = formatCadDimensionLabel(len);
 
     ctx.save();
     ctx.translate(mx, my);
     ctx.rotate(angle);
-
-    const textWidth = ctx.measureText(label).width;
-    const padX = 4;
-    const boxW = textWidth + padX * 2;
-    const boxH = 11;
-
-    ctx.fillStyle = 'rgba(10, 14, 18, 0.8)';
-    ctx.fillRect(-boxW / 2, -boxH / 2, boxW, boxH);
-    ctx.strokeStyle = 'rgba(186, 205, 219, 0.46)';
-    ctx.lineWidth = 0.75;
-    ctx.strokeRect(-boxW / 2, -boxH / 2, boxW, boxH);
-
-    ctx.fillStyle = '#e8f1f7';
-    ctx.fillText(label, 0, 0.5);
+    ctx.fillStyle = '#d5f0ff';
+    ctx.strokeStyle = 'rgba(3, 19, 34, 0.92)';
+    ctx.lineWidth = 2.2;
+    ctx.strokeText(label, 0, -7.5);
+    ctx.fillStyle = '#d5f0ff';
+    ctx.fillText(label, 0, -7.5);
     ctx.restore();
   }
 }
@@ -1239,7 +1556,7 @@ function drawCurveAnnotations() {
     const end = a1 + d;
     const ccw = d < 0;
 
-    ctx.strokeStyle = 'rgba(210, 227, 238, 0.45)';
+    ctx.strokeStyle = 'rgba(138, 208, 238, 0.58)';
     ctx.lineWidth = 0.8;
     ctx.beginPath();
     ctx.arc(b.x, b.y, arcR, a1, end, ccw);
@@ -1253,11 +1570,11 @@ function drawCurveAnnotations() {
     const bw = tw + 6;
     const bh = 10;
 
-    ctx.fillStyle = 'rgba(10, 14, 18, 0.8)';
+    ctx.fillStyle = 'rgba(4, 20, 38, 0.84)';
     ctx.fillRect(tx - bw / 2, ty - bh / 2, bw, bh);
-    ctx.strokeStyle = 'rgba(180, 202, 217, 0.35)';
+    ctx.strokeStyle = 'rgba(122, 196, 230, 0.56)';
     ctx.strokeRect(tx - bw / 2, ty - bh / 2, bw, bh);
-    ctx.fillStyle = '#eef4f9';
+    ctx.fillStyle = '#d8f2ff';
     ctx.fillText(label, tx, ty + 0.4);
   }
 }
@@ -1301,7 +1618,7 @@ function drawCadGrid() {
   const startXMinor = ((state.view.offsetX % minorPx) + minorPx) % minorPx;
   const startYMinor = ((state.view.offsetY % minorPx) + minorPx) % minorPx;
 
-  ctx.strokeStyle = 'rgba(235, 240, 245, 0.1)';
+  ctx.strokeStyle = 'rgba(129, 189, 222, 0.16)';
   ctx.lineWidth = 1;
   for (let x = startXMinor; x < canvas.width; x += minorPx) {
     ctx.beginPath();
@@ -1318,7 +1635,7 @@ function drawCadGrid() {
 
   const startXMajor = ((state.view.offsetX % majorPx) + majorPx) % majorPx;
   const startYMajor = ((state.view.offsetY % majorPx) + majorPx) % majorPx;
-  ctx.strokeStyle = 'rgba(235, 242, 248, 0.24)';
+  ctx.strokeStyle = 'rgba(155, 218, 246, 0.32)';
   for (let x = startXMajor; x < canvas.width; x += majorPx) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
@@ -1336,16 +1653,7 @@ function drawCadGrid() {
 function drawBuildingTrack() {
   const pts = state.buildingTrack;
   if (pts.length > 1) {
-    ctx.strokeStyle = '#e6eef4';
-    ctx.setLineDash([8, 8]);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i += 1) {
-      ctx.lineTo(pts[i].x, pts[i].y);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
+    drawGhostTrackPolyline(pts);
   }
 
   if (state.mode !== 'track') {
@@ -1354,23 +1662,23 @@ function drawBuildingTrack() {
 
   if (pts.length > 0) {
     const start = pts[0];
-    ctx.fillStyle = '#eaf3f9';
+    ctx.fillStyle = '#d2efff';
     ctx.beginPath();
     ctx.arc(start.x, start.y, 7, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = '#f5fbff';
+    ctx.strokeStyle = '#b8e8ff';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(start.x, start.y, 12, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.fillStyle = '#dce8f1';
+    ctx.fillStyle = '#c7ebff';
     ctx.font = '700 11px Orbitron';
     ctx.fillText('START', start.x + 14, start.y - 14);
   }
 
   for (const p of pts) {
-    ctx.fillStyle = '#d6e4ee';
+    ctx.fillStyle = '#bee6fb';
     ctx.beginPath();
     ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
     ctx.fill();
@@ -1380,17 +1688,10 @@ function drawBuildingTrack() {
     const preview = state.trackPreviewPoint;
     const from = pts.length > 0 ? pts[pts.length - 1] : preview;
     if (pts.length > 0) {
-      ctx.strokeStyle = '#f0f6fb';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 5]);
-      ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(preview.x, preview.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      drawGhostTrackSegment(from, preview);
     }
 
-    ctx.fillStyle = 'rgba(238, 245, 250, 0.9)';
+    ctx.fillStyle = 'rgba(196, 234, 252, 0.92)';
     ctx.beginPath();
     ctx.arc(preview.x, preview.y, 5, 0, Math.PI * 2);
     ctx.fill();
@@ -1399,7 +1700,7 @@ function drawBuildingTrack() {
 
 function drawStations() {
   for (const st of state.stations) {
-    ctx.fillStyle = '#f3b61f';
+    ctx.fillStyle = '#f1c86a';
     ctx.beginPath();
     ctx.arc(st.x, st.y, 8, 0, Math.PI * 2);
     ctx.fill();
@@ -1412,7 +1713,7 @@ function drawStations() {
       ctx.stroke();
     }
 
-    ctx.fillStyle = '#dff6ff';
+    ctx.fillStyle = '#cff0ff';
     ctx.font = '600 12px Rajdhani';
     ctx.fillText(st.name, st.x + 10, st.y - 10);
   }
@@ -1428,12 +1729,12 @@ function drawSelectionRect() {
     return;
   }
 
-  ctx.strokeStyle = '#11d7f2';
+  ctx.strokeStyle = '#62dfff';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([8, 6]);
   ctx.strokeRect(r.x, r.y, r.w, r.h);
   ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(17, 215, 242, 0.14)';
+  ctx.fillStyle = 'rgba(86, 210, 246, 0.16)';
   ctx.fillRect(r.x, r.y, r.w, r.h);
 }
 
@@ -1455,14 +1756,14 @@ function drawTrains() {
       ctx.strokeRect(p.x - 11, p.y - 8, 22, 16);
     }
 
-    ctx.fillStyle = '#dff6ff';
+    ctx.fillStyle = '#cff0ff';
     ctx.font = '600 11px Rajdhani';
     ctx.fillText(train.name, p.x + 10, p.y + 4);
   }
 }
 
 function drawClock() {
-  ctx.fillStyle = '#8ef4ff';
+  ctx.fillStyle = '#96e8ff';
   ctx.font = '700 14px Orbitron';
   const warnCount = state.diagnostics.sharpCurveIndices.length;
   const warnText = warnCount > 0 ? `  Sharp Curves: ${warnCount}` : '';
@@ -1752,8 +2053,45 @@ canvas.addEventListener('click', (ev) => {
 
   if (state.mode === 'track') {
     const last = state.buildingTrack[state.buildingTrack.length - 1];
-    const nextPoint = { x, y };
-    if (!last || distance(last, nextPoint) > 2) {
+    let nextPoint = { x, y };
+
+    const snap = snapToTrackEndpoint(nextPoint);
+    if (snap) {
+      nextPoint = { x: snap.point.x, y: snap.point.y };
+      if (!last) {
+        state.draftConstraintHeadingRad = snap.headingRad;
+        setHintTemporary('既存線路の端点にスナップしました。');
+      }
+    }
+
+    if (!last) {
+      state.buildingTrack.push(nextPoint);
+      commitHistory();
+      render();
+      return;
+    }
+
+    const segLen = distance(last, nextPoint);
+    if (segLen < TRACK_CONNECTION_RULES.minSegmentLength) {
+      setHintTemporary('短すぎる線分は敷設できません。');
+      return;
+    }
+
+    if (state.buildingTrack.length === 1 && Number.isFinite(state.draftConstraintHeadingRad)) {
+      const h = Math.atan2(nextPoint.y - last.y, nextPoint.x - last.x);
+      const lim = (TRACK_CONNECTION_RULES.maxInitialDeflectionDeg * Math.PI) / 180;
+      if (angleDiffAbs(h, state.draftConstraintHeadingRad) > lim) {
+        setHintTemporary('接続角が急すぎます。既存線路の向きに近づけてください。');
+        return;
+      }
+    }
+
+    if (isIllegalIntersection(last, nextPoint)) {
+      setHintTemporary('既存線路と不正に交差するため敷設できません。');
+      return;
+    }
+
+    if (distance(last, nextPoint) > 2) {
       state.buildingTrack.push(nextPoint);
     }
     commitHistory();
@@ -1816,6 +2154,7 @@ canvas.addEventListener('click', (ev) => {
 modeSelect.addEventListener('change', () => {
   state.mode = modeSelect.value;
   state.trackPreviewPoint = null;
+  state.draftConstraintHeadingRad = null;
   state.selection.active = false;
   state.selection.start = null;
   state.selection.current = null;
