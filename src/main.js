@@ -2,7 +2,9 @@ const canvas = document.getElementById('mapCanvas');
 const ctx = canvas.getContext('2d');
 const topbar = document.querySelector('.topbar');
 
-const modeSelect = document.getElementById('modeSelect');
+const modeSelectBtn = document.getElementById('modeSelectBtn');
+const modeTrackBtn = document.getElementById('modeTrackBtn');
+const modeEraseBtn = document.getElementById('modeEraseBtn');
 const undoBtn = document.getElementById('undoBtn');
 const redoBtn = document.getElementById('redoBtn');
 const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
@@ -13,8 +15,12 @@ const minRadiusRange = document.getElementById('minRadiusRange');
 const minRadiusLabel = document.getElementById('minRadiusLabel');
 const trackPresetSelect = document.getElementById('trackPresetSelect');
 const renderModeSelect = document.getElementById('renderModeSelect');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const zoomLabel = document.getElementById('zoomLabel');
 const layerGrid = document.getElementById('layerGrid');
 const layerTrack = document.getElementById('layerTrack');
+const layerVehicleGuide = document.getElementById('layerVehicleGuide');
 const layerStations = document.getElementById('layerStations');
 const layerTrains = document.getElementById('layerTrains');
 const layerDimensions = document.getElementById('layerDimensions');
@@ -36,7 +42,7 @@ const trainForm = document.getElementById('trainForm');
 const trainNameInput = document.getElementById('trainName');
 const trainStopsInput = document.getElementById('trainStops');
 const trainList = document.getElementById('trainList');
-const STORAGE_KEY = 'transitnexus.project.v1';
+const STORAGE_KEY = 'transitnexus.project.v3.nodistance';
 
 const TRACK_PRESETS = {
   ballast_main: {
@@ -123,10 +129,22 @@ const PART_LIBRARY = {
 };
 
 const TRACK_CONNECTION_RULES = {
-  snapDistance: 18,
-  minSegmentLength: 6,
-  maxInitialDeflectionDeg: 70,
+  snapDistancePx: 18,
+  minSegmentLength: 1,
+  maxInitialDeflectionDeg: 180,
   endpointEpsilon: 0.8
+};
+
+const DOT_LAYOUT_RULES = {
+  dotSpacingMm: 100,
+  majorDotEvery: 5,
+  gridMinPx: 5,
+  dotSnapRadiusPx: 12,
+  nodeSnapRadiusPx: 16
+};
+
+const VEHICLE_GUIDE = {
+  conventionalWidthMm: 3000
 };
 
 const state = {
@@ -138,21 +156,22 @@ const state = {
     minRadius: 140,
     trackPreset: 'ballast_main',
     renderMode: 'cad',
-    showDimensions: true,
+    showDimensions: false,
     layers: {
       grid: true,
       track: true,
+      vehicleGuide: true,
       stations: true,
       trains: true,
-      dimensions: true,
-      curveInfo: true,
+      dimensions: false,
+      curveInfo: false,
       warnings: true
     }
   },
   view: {
     zoom: 1,
-    minZoom: 0.35,
-    maxZoom: 3.5,
+    minZoom: 0.002,
+    maxZoom: 2.5,
     offsetX: 0,
     offsetY: 0,
     panning: false,
@@ -161,14 +180,17 @@ const state = {
     justPanned: false
   },
   trackPoints: [],
+  trackSegments: [],
   trackParts: [],
   stations: [],
   trains: [],
   buildingTrack: [],
   draftConstraintHeadingRad: null,
   trackPreviewPoint: null,
+  lastTrackCommitAt: 0,
   selectedStationIds: new Set(),
   selectedTrainIds: new Set(),
+  selectedTrackSegmentIndex: null,
   selectionFilters: {
     station: true,
     signal: false,
@@ -197,7 +219,14 @@ const state = {
 
 let hintTimerId = null;
 
-state.mode = modeSelect.value || state.mode;
+function syncModeButtons() {
+  if (!modeSelectBtn || !modeTrackBtn || !modeEraseBtn) {
+    return;
+  }
+  modeSelectBtn.classList.toggle('active', state.mode === 'select');
+  modeTrackBtn.classList.toggle('active', state.mode === 'track');
+  modeEraseBtn.classList.toggle('active', state.mode === 'erase');
+}
 
 function resizeCanvasToViewport() {
   const rect = canvas.getBoundingClientRect();
@@ -234,7 +263,7 @@ function syncPartPaletteMenu() {
   if (!partPaletteMenu) {
     return;
   }
-  partPaletteMenu.classList.toggle('visible', state.mode === 'part');
+  partPaletteMenu.classList.remove('visible');
 }
 
 function clone(value) {
@@ -246,6 +275,7 @@ function snapshotState() {
     simMinute: state.simMinute,
     rules: clone(state.rules),
     trackPoints: clone(state.trackPoints),
+    trackSegments: clone(state.trackSegments),
     trackParts: clone(state.trackParts),
     stations: clone(state.stations),
     trains: clone(state.trains),
@@ -287,14 +317,15 @@ function restoreSnapshot(snap) {
     minRadius: 140,
     trackPreset: 'ballast_main',
     renderMode: 'cad',
-    showDimensions: true,
+    showDimensions: false,
     layers: {
       grid: true,
       track: true,
+      vehicleGuide: true,
       stations: true,
       trains: true,
-      dimensions: true,
-      curveInfo: true,
+      dimensions: false,
+      curveInfo: false,
       warnings: true
     },
     ...(snap.rules || {})
@@ -302,15 +333,17 @@ function restoreSnapshot(snap) {
   state.rules.layers = {
     grid: true,
     track: true,
+    vehicleGuide: true,
     stations: true,
     trains: true,
-    dimensions: true,
-    curveInfo: true,
+    dimensions: false,
+    curveInfo: false,
     warnings: true,
     ...(state.rules.layers || {})
   };
   state.rules.showDimensions = state.rules.layers.dimensions;
   state.trackPoints = clone(snap.trackPoints);
+  state.trackSegments = clone(snap.trackSegments || []);
   state.trackParts = clone(snap.trackParts || []);
   state.stations = clone(snap.stations);
   state.trains = clone(snap.trains);
@@ -331,19 +364,34 @@ function restoreSnapshot(snap) {
   state.selection.append = false;
   rebuildStationList();
   rebuildTrainList();
-  minRadiusRange.value = String(state.rules.minRadius);
-  minRadiusLabel.textContent = `R>=${state.rules.minRadius}`;
+  if (minRadiusRange) {
+    minRadiusRange.value = String(state.rules.minRadius);
+  }
+  if (minRadiusLabel) {
+    minRadiusLabel.textContent = '';
+  }
   trackPresetSelect.value = state.rules.trackPreset;
   renderModeSelect.value = state.rules.renderMode;
   layerGrid.checked = state.rules.layers.grid;
   layerTrack.checked = state.rules.layers.track;
+  if (layerVehicleGuide) {
+    layerVehicleGuide.checked = state.rules.layers.vehicleGuide;
+  }
   layerStations.checked = state.rules.layers.stations;
   layerTrains.checked = state.rules.layers.trains;
-  layerDimensions.checked = state.rules.layers.dimensions;
-  layerCurveInfo.checked = state.rules.layers.curveInfo;
+  if (layerDimensions) {
+    layerDimensions.checked = state.rules.layers.dimensions;
+  }
+  if (layerCurveInfo) {
+    layerCurveInfo.checked = state.rules.layers.curveInfo;
+  }
   layerWarnings.checked = state.rules.layers.warnings;
-  partTypeSelect.value = state.partBuilder.partType;
-  curveTurnSelect.value = state.partBuilder.curveTurn;
+  if (partTypeSelect) {
+    partTypeSelect.value = state.partBuilder.partType;
+  }
+  if (curveTurnSelect) {
+    curveTurnSelect.value = state.partBuilder.curveTurn;
+  }
   updateTrackDiagnostics();
   updateTrains();
   render();
@@ -437,6 +485,49 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function updateZoomHud() {
+  if (!zoomLabel) {
+    return;
+  }
+  // Show how much wider the visible area is compared to the base view.
+  const rangeFactor = 1 / Math.max(0.0001, state.view.zoom);
+  const text = rangeFactor >= 10 ? `${Math.round(rangeFactor)}x` : `${rangeFactor.toFixed(1)}x`;
+  zoomLabel.textContent = text;
+}
+
+function applyZoomAtScreenPoint(screenPoint, zoomFactor) {
+  const worldBefore = {
+    x: (screenPoint.x - state.view.offsetX) / state.view.zoom,
+    y: (screenPoint.y - state.view.offsetY) / state.view.zoom
+  };
+
+  const nextZoom = clamp(state.view.zoom * zoomFactor, state.view.minZoom, state.view.maxZoom);
+  if (nextZoom === state.view.zoom) {
+    return false;
+  }
+
+  state.view.zoom = nextZoom;
+  state.view.offsetX = screenPoint.x - worldBefore.x * state.view.zoom;
+  state.view.offsetY = screenPoint.y - worldBefore.y * state.view.zoom;
+  updateZoomHud();
+  render();
+  return true;
+}
+
+function applyWheelZoom(ev, screenPoint) {
+  const zoomFactorRaw = Math.pow(1.0045, -ev.deltaY);
+  const zoomFactor = zoomFactorRaw > 1 ? clamp(zoomFactorRaw, 1.0, 1.08) : clamp(zoomFactorRaw, 0.22, 1.0);
+  return applyZoomAtScreenPoint(screenPoint, zoomFactor);
+}
+
+function zoomByStep(multiplier) {
+  const center = {
+    x: canvas.width * 0.5,
+    y: canvas.height * 0.5
+  };
+  applyZoomAtScreenPoint(center, multiplier);
+}
+
 function normalizeRect(a, b) {
   return {
     x: Math.min(a.x, b.x),
@@ -449,6 +540,45 @@ function normalizeRect(a, b) {
 function clearSelection() {
   state.selectedStationIds.clear();
   state.selectedTrainIds.clear();
+  state.selectedTrackSegmentIndex = null;
+}
+
+function setMode(nextMode) {
+  state.mode = nextMode;
+  state.trackPreviewPoint = null;
+  state.draftConstraintHeadingRad = null;
+  state.selection.active = false;
+  state.selection.start = null;
+  state.selection.current = null;
+  state.selection.append = false;
+  syncSelectionFilterMenu();
+  syncPartPaletteMenu();
+  syncModeButtons();
+  updateHint();
+  render();
+}
+
+function closestTrackSegment(point, radius = 20) {
+  const segs = getTrackSegments();
+  if (segs.length < 1) {
+    return null;
+  }
+
+  let best = null;
+  for (let i = 0; i < segs.length; i += 1) {
+    const a = segs[i].a;
+    const b = segs[i].b;
+    const proj = nearestPointOnSegment(point, a, b);
+    if (proj.dist <= radius && (!best || proj.dist < best.dist)) {
+      best = {
+        type: 'track',
+        segmentIndex: i + 1,
+        dist: proj.dist
+      };
+    }
+  }
+
+  return best;
 }
 
 function pickEntityAt(point, radius = 12) {
@@ -474,6 +604,11 @@ function pickEntityAt(point, radius = 12) {
         best = { type: 'train', id: tr.id, dist: d };
       }
     }
+  }
+
+  const seg = closestTrackSegment(point, radius + 4);
+  if (seg && (!best || seg.dist < best.dist)) {
+    best = seg;
   }
 
   return best;
@@ -502,6 +637,13 @@ function selectByClick(point, mode = 'replace') {
         state.selectedTrainIds.add(picked.id);
       }
     }
+    if (picked.type === 'track') {
+      if (isToggle && state.selectedTrackSegmentIndex === picked.segmentIndex) {
+        state.selectedTrackSegmentIndex = null;
+      } else {
+        state.selectedTrackSegmentIndex = picked.segmentIndex;
+      }
+    }
   }
 
   rebuildStationList();
@@ -518,7 +660,11 @@ function nextStationName() {
 }
 
 function deleteSelectedEntities() {
-  if (state.selectedStationIds.size === 0 && state.selectedTrainIds.size === 0) {
+  if (
+    state.selectedStationIds.size === 0 &&
+    state.selectedTrainIds.size === 0 &&
+    state.selectedTrackSegmentIndex === null
+  ) {
     return;
   }
 
@@ -533,6 +679,11 @@ function deleteSelectedEntities() {
     }
     return t.stops.every((stop) => !removedNames.has(stop.stationName));
   });
+
+  if (state.selectedTrackSegmentIndex !== null) {
+    removeTrackSegmentByIndex(state.selectedTrackSegmentIndex);
+  }
+
   clearSelection();
   rebuildStationList();
   rebuildTrainList();
@@ -549,6 +700,58 @@ function cancelTrackBuilding() {
   state.buildingTrack = [];
   state.draftConstraintHeadingRad = null;
   state.trackPreviewPoint = null;
+  commitHistory();
+  render();
+  return true;
+}
+
+function removeTrackSegmentByIndex(segmentIndex) {
+  if (!Number.isInteger(segmentIndex) || segmentIndex < 1) {
+    return;
+  }
+
+  if (state.trackSegments.length > 0) {
+    const idx = segmentIndex - 1;
+    if (idx >= 0 && idx < state.trackSegments.length) {
+      state.trackSegments.splice(idx, 1);
+    }
+    state.trackParts = [];
+    updateTrackDiagnostics();
+    return;
+  }
+
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
+    return;
+  }
+
+  if (pts.length === 2) {
+    state.trackPoints = [];
+    state.trackParts = [];
+    updateTrackDiagnostics();
+    return;
+  }
+
+  const lastSeg = pts.length - 1;
+  if (segmentIndex <= 1) {
+    pts.shift();
+  } else if (segmentIndex >= lastSeg) {
+    pts.pop();
+  } else {
+    // Single-polyline model: remove the vertex at segment end to erase this segment.
+    pts.splice(segmentIndex, 1);
+  }
+
+  state.trackParts = [];
+  updateTrackDiagnostics();
+}
+
+function eraseTrackAtPoint(point) {
+  const seg = closestTrackSegment(point, 26);
+  if (!seg) {
+    return false;
+  }
+  removeTrackSegmentByIndex(seg.segmentIndex);
   commitHistory();
   render();
   return true;
@@ -693,11 +896,27 @@ function commitTrackDraft() {
     return false;
   }
 
+  const draft = [...state.buildingTrack];
+
   if (state.trackPoints.length === 0) {
-    state.trackPoints = [...state.buildingTrack];
+    state.trackPoints = draft;
   } else {
-    const merged = [...state.trackPoints, ...state.buildingTrack];
-    state.trackPoints = merged;
+    const head = state.trackPoints[0];
+    const tail = state.trackPoints[state.trackPoints.length - 1];
+    const d0 = draft[0];
+    const dN = draft[draft.length - 1];
+
+    if (pointsNear(d0, tail)) {
+      state.trackPoints = [...state.trackPoints, ...draft.slice(1)];
+    } else if (pointsNear(d0, head)) {
+      state.trackPoints = [...draft.slice(1).reverse(), ...state.trackPoints];
+    } else if (pointsNear(dN, tail)) {
+      state.trackPoints = [...state.trackPoints, ...draft.slice(0, -1).reverse()];
+    } else if (pointsNear(dN, head)) {
+      state.trackPoints = [...draft.slice(0, -1), ...state.trackPoints];
+    } else {
+      state.trackPoints = [...state.trackPoints, ...draft];
+    }
   }
 
   state.buildingTrack = [];
@@ -728,6 +947,179 @@ function distance(a, b) {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.hypot(dx, dy);
+}
+
+function samePoint(a, b, eps = TRACK_CONNECTION_RULES.endpointEpsilon) {
+  return distance(a, b) <= eps;
+}
+
+function getTrackSegments() {
+  if (state.trackSegments.length > 0) {
+    return state.trackSegments;
+  }
+
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
+    return [];
+  }
+
+  const out = [];
+  for (let i = 1; i < pts.length; i += 1) {
+    out.push({
+      id: `legacy-${i}`,
+      a: { x: pts[i - 1].x, y: pts[i - 1].y },
+      b: { x: pts[i].x, y: pts[i].y }
+    });
+  }
+  return out;
+}
+
+function addTrackSegment(a, b) {
+  if (distance(a, b) <= TRACK_CONNECTION_RULES.endpointEpsilon) {
+    return false;
+  }
+
+  if (state.trackSegments.length === 0 && state.trackPoints.length > 1) {
+    for (let i = 1; i < state.trackPoints.length; i += 1) {
+      state.trackSegments.push({
+        id: `seed-${i}-${crypto.randomUUID()}`,
+        a: { x: state.trackPoints[i - 1].x, y: state.trackPoints[i - 1].y },
+        b: { x: state.trackPoints[i].x, y: state.trackPoints[i].y }
+      });
+    }
+  }
+
+  const seg = {
+    id: crypto.randomUUID(),
+    a: { x: a.x, y: a.y },
+    b: { x: b.x, y: b.y }
+  };
+
+  const exists = state.trackSegments.some((s) =>
+    (samePoint(s.a, seg.a) && samePoint(s.b, seg.b)) ||
+    (samePoint(s.a, seg.b) && samePoint(s.b, seg.a))
+  );
+  if (exists) {
+    return false;
+  }
+
+  state.trackSegments.push(seg);
+  return true;
+}
+
+function nearestTrackNodePoint(point) {
+  const nodes = getTrackNodeTargets();
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  let best = null;
+  for (const n of nodes) {
+    const d = distance(point, n.point);
+    if (!best || d < best.dist) {
+      best = { point: n.point, dist: d };
+    }
+  }
+  return best ? { x: best.point.x, y: best.point.y } : null;
+}
+
+function worldRadiusFromScreenPx(px) {
+  return px / Math.max(0.0001, state.view.zoom);
+}
+
+function zoomAdjustedWorldLineWidth(baseScreenPx, minWorld = 0.7, maxWorld = 26) {
+  const z = Math.max(0.0001, state.view.zoom);
+  const zoomBoost = z > 1 ? 1 + Math.min(1.8, Math.log2(z) * 0.45) : 1;
+  const targetScreenPx = Math.max(baseScreenPx, 2.2) * zoomBoost;
+  const worldWidth = targetScreenPx / z;
+  return clamp(worldWidth, minWorld, maxWorld);
+}
+
+function snapToDotGrid(point) {
+  const step = DOT_LAYOUT_RULES.dotSpacingMm;
+  return {
+    x: Math.round(point.x / step) * step,
+    y: Math.round(point.y / step) * step
+  };
+}
+
+function getTrackNodeTargets() {
+  const segs = getTrackSegments();
+  if (segs.length > 0) {
+    const unique = [];
+    for (const s of segs) {
+      for (const p of [s.a, s.b]) {
+        if (!unique.some((u) => samePoint(u, p, 0.01))) {
+          unique.push({ x: p.x, y: p.y });
+        }
+      }
+    }
+    return unique.map((p) => ({ point: p }));
+  }
+
+  const pts = state.trackPoints;
+  if (pts.length === 0) {
+    return [];
+  }
+  if (pts.length === 1) {
+    return [{ point: { x: pts[0].x, y: pts[0].y } }];
+  }
+  return [
+    { point: { x: pts[0].x, y: pts[0].y } },
+    { point: { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y } }
+  ];
+}
+
+function snapToTrackNode(point) {
+  const targets = getTrackNodeTargets();
+  const radius = worldRadiusFromScreenPx(DOT_LAYOUT_RULES.nodeSnapRadiusPx);
+  let best = null;
+  for (const t of targets) {
+    const d = distance(point, t.point);
+    if (d <= radius && (!best || d < best.dist)) {
+      best = { ...t, dist: d };
+    }
+  }
+  return best;
+}
+
+function resolveTrackSnapPoint(rawPoint) {
+  const endpoint = snapToTrackEndpoint(rawPoint);
+  if (endpoint) {
+    return {
+      point: { x: endpoint.point.x, y: endpoint.point.y },
+      kind: 'endpoint',
+      snappedToEndpoint: true,
+      headingRad: endpoint.headingRad
+    };
+  }
+
+  const node = snapToTrackNode(rawPoint);
+  if (node) {
+    return {
+      point: { x: node.point.x, y: node.point.y },
+      kind: 'node',
+      snappedToEndpoint: false,
+      headingRad: null
+    };
+  }
+
+  const gridPoint = snapToDotGrid(rawPoint);
+  if (distance(rawPoint, gridPoint) <= worldRadiusFromScreenPx(DOT_LAYOUT_RULES.dotSnapRadiusPx)) {
+    return {
+      point: gridPoint,
+      kind: 'grid',
+      snappedToEndpoint: false,
+      headingRad: null
+    };
+  }
+
+  return {
+    point: gridPoint,
+    kind: 'grid',
+    snappedToEndpoint: false,
+    headingRad: null
+  };
 }
 
 function angleDiffAbs(a, b) {
@@ -764,12 +1156,41 @@ function getTrackEndpointTargets() {
   ];
 }
 
-function snapToTrackEndpoint(point) {
+function nearestTrackEndpoint(point) {
   const targets = getTrackEndpointTargets();
   let best = null;
   for (const t of targets) {
     const d = distance(point, t.point);
-    if (d <= TRACK_CONNECTION_RULES.snapDistance && (!best || d < best.dist)) {
+    if (!best || d < best.dist) {
+      best = { ...t, dist: d };
+    }
+  }
+  return best;
+}
+
+function nearestTrackEndpointPoint() {
+  const pts = state.trackPoints;
+  if (pts.length < 2) {
+    return null;
+  }
+  const head = pts[0];
+  const tail = pts[pts.length - 1];
+  if (state.buildingTrack.length === 0) {
+    return { x: tail.x, y: tail.y };
+  }
+  const current = state.buildingTrack[state.buildingTrack.length - 1];
+  const dh = distance(current, head);
+  const dt = distance(current, tail);
+  return dt <= dh ? { x: tail.x, y: tail.y } : { x: head.x, y: head.y };
+}
+
+function snapToTrackEndpoint(point) {
+  const targets = getTrackEndpointTargets();
+  const radius = worldRadiusFromScreenPx(TRACK_CONNECTION_RULES.snapDistancePx);
+  let best = null;
+  for (const t of targets) {
+    const d = distance(point, t.point);
+    if (d <= radius && (!best || d < best.dist)) {
       best = { ...t, dist: d };
     }
   }
@@ -1003,23 +1424,91 @@ function updateTrains() {
 }
 
 function drawTrack() {
-  const pts = state.trackPoints;
-  if (pts.length < 2) {
+  const segs = getTrackSegments();
+  if (segs.length < 1) {
     return;
   }
 
-  const renderPts = samplePolylineBySpacing(pts, 6);
   const isCad = state.rules.renderMode === 'cad';
   ctx.strokeStyle = isCad ? '#bdeaff' : '#d8e3ec';
-  ctx.lineWidth = isCad ? 1.8 : 2.1;
+  const targetScreenWidth = isCad ? 1.8 : 2.1;
+  ctx.lineWidth = zoomAdjustedWorldLineWidth(targetScreenWidth);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(renderPts[0].x, renderPts[0].y);
-  for (let i = 1; i < renderPts.length; i += 1) {
-    ctx.lineTo(renderPts[i].x, renderPts[i].y);
+  for (const s of segs) {
+    ctx.beginPath();
+    ctx.moveTo(s.a.x, s.a.y);
+    ctx.lineTo(s.b.x, s.b.y);
+    ctx.stroke();
   }
-  ctx.stroke();
+
+  const uniqueNodes = [];
+  for (const s of segs) {
+    for (const p of [s.a, s.b]) {
+      if (!uniqueNodes.some((u) => samePoint(u, p, 0.01))) {
+        uniqueNodes.push(p);
+      }
+    }
+  }
+
+  ctx.fillStyle = isCad ? 'rgba(184, 232, 255, 0.92)' : 'rgba(218, 227, 235, 0.92)';
+  for (const p of uniqueNodes) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (Number.isInteger(state.selectedTrackSegmentIndex)) {
+    const idx = state.selectedTrackSegmentIndex - 1;
+    if (idx >= 0 && idx < segs.length) {
+      const a = segs[idx].a;
+      const b = segs[idx].b;
+      ctx.strokeStyle = '#70ffbe';
+      ctx.lineWidth = zoomAdjustedWorldLineWidth(3.2);
+      ctx.setLineDash([8, 4]);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+}
+
+function drawVehicleWidthGuide() {
+  const segs = getTrackSegments();
+  if (segs.length < 1 || !state.rules.layers.vehicleGuide) {
+    return;
+  }
+
+  const offset = VEHICLE_GUIDE.conventionalWidthMm / 2;
+  ctx.strokeStyle = 'rgba(136, 227, 255, 0.78)';
+  ctx.lineWidth = zoomAdjustedWorldLineWidth(1.8, 0.8, 16);
+  ctx.setLineDash([10, 7]);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const drawOffsetSegment = (a, b, off) => {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.0001) {
+      return;
+    }
+    const nx = -dy / len;
+    const ny = dx / len;
+    ctx.beginPath();
+    ctx.moveTo(a.x + nx * off, a.y + ny * off);
+    ctx.lineTo(b.x + nx * off, b.y + ny * off);
+    ctx.stroke();
+  };
+
+  for (const s of segs) {
+    drawOffsetSegment(s.a, s.b, offset);
+    drawOffsetSegment(s.a, s.b, -offset);
+  }
+
+  ctx.setLineDash([]);
 }
 
 function drawTrackCad() {
@@ -1417,9 +1906,7 @@ function shouldShowTrackDimensions() {
 }
 
 function drawTrackDimensions() {
-  if (!shouldShowTrackDimensions()) {
-    return;
-  }
+  return;
 
   const pts = state.trackPoints;
   if (pts.length < 2) {
@@ -1509,9 +1996,7 @@ function drawTrackDimensions() {
 }
 
 function drawCurveAnnotations() {
-  if (!state.rules.layers.curveInfo) {
-    return;
-  }
+  return;
 
   const pts = state.trackPoints;
   if (pts.length < 3) {
@@ -1607,53 +2092,68 @@ function drawPartPreview() {
 }
 
 function drawCadGrid() {
-  const minorWorld = 40;
-  const majorWorld = 200;
-  const minorPx = minorWorld * state.view.zoom;
-  const majorPx = majorWorld * state.view.zoom;
-  if (minorPx < 6) {
-    return;
+  const baseStep = DOT_LAYOUT_RULES.dotSpacingMm;
+  let step = baseStep;
+  let stepPx = step * state.view.zoom;
+  while (stepPx < DOT_LAYOUT_RULES.gridMinPx) {
+    step *= 2;
+    stepPx = step * state.view.zoom;
   }
 
-  const startXMinor = ((state.view.offsetX % minorPx) + minorPx) % minorPx;
-  const startYMinor = ((state.view.offsetY % minorPx) + minorPx) % minorPx;
+  const worldMinX = -state.view.offsetX / state.view.zoom;
+  const worldMaxX = (canvas.width - state.view.offsetX) / state.view.zoom;
+  const worldMinY = -state.view.offsetY / state.view.zoom;
+  const worldMaxY = (canvas.height - state.view.offsetY) / state.view.zoom;
 
-  ctx.strokeStyle = 'rgba(129, 189, 222, 0.16)';
-  ctx.lineWidth = 1;
-  for (let x = startXMinor; x < canvas.width; x += minorPx) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, canvas.height);
-    ctx.stroke();
-  }
-  for (let y = startYMinor; y < canvas.height; y += minorPx) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-  }
+  const startX = Math.floor(worldMinX / step) * step;
+  const startY = Math.floor(worldMinY / step) * step;
+  const majorEvery = DOT_LAYOUT_RULES.majorDotEvery;
+  const majorStep = step * majorEvery;
 
-  const startXMajor = ((state.view.offsetX % majorPx) + majorPx) % majorPx;
-  const startYMajor = ((state.view.offsetY % majorPx) + majorPx) % majorPx;
-  ctx.strokeStyle = 'rgba(155, 218, 246, 0.32)';
-  for (let x = startXMajor; x < canvas.width; x += majorPx) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, canvas.height);
-    ctx.stroke();
-  }
-  for (let y = startYMajor; y < canvas.height; y += majorPx) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
+  for (let wx = startX; wx <= worldMaxX + step; wx += step) {
+    const sx = wx * state.view.zoom + state.view.offsetX;
+    for (let wy = startY; wy <= worldMaxY + step; wy += step) {
+      const sy = wy * state.view.zoom + state.view.offsetY;
+      const isMajorX = Math.abs(wx % majorStep) < step * 0.1;
+      const isMajorY = Math.abs(wy % majorStep) < step * 0.1;
+      const isMajor = isMajorX && isMajorY;
+      const r = isMajor ? 1.45 : 0.9;
+      ctx.fillStyle = isMajor ? 'rgba(165, 224, 249, 0.58)' : 'rgba(123, 187, 220, 0.36)';
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
 function drawBuildingTrack() {
   const pts = state.buildingTrack;
   if (pts.length > 1) {
-    drawGhostTrackPolyline(pts);
+    ctx.strokeStyle = 'rgba(111, 212, 255, 0.92)';
+    ctx.lineWidth = zoomAdjustedWorldLineWidth(2);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i += 1) {
+      ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.stroke();
+  }
+
+  if (pts.length > 0 && state.trackPreviewPoint) {
+    const from = pts[pts.length - 1];
+    const to = state.trackPreviewPoint;
+    if (distance(from, to) > TRACK_CONNECTION_RULES.endpointEpsilon) {
+      ctx.strokeStyle = 'rgba(137, 228, 255, 0.92)';
+      ctx.lineWidth = zoomAdjustedWorldLineWidth(2.4, 1, 20);
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
 
   if (state.mode !== 'track') {
@@ -1685,15 +2185,19 @@ function drawBuildingTrack() {
   }
 
   if (state.trackPreviewPoint) {
-    const preview = state.trackPreviewPoint;
-    const from = pts.length > 0 ? pts[pts.length - 1] : preview;
-    if (pts.length > 0) {
-      drawGhostTrackSegment(from, preview);
-    }
+    const c = state.trackPreviewPoint;
+    const rOuter = worldRadiusFromScreenPx(12);
+    const rInner = worldRadiusFromScreenPx(4);
 
-    ctx.fillStyle = 'rgba(196, 234, 252, 0.92)';
+    ctx.strokeStyle = 'rgba(122, 225, 255, 0.98)';
+    ctx.lineWidth = zoomAdjustedWorldLineWidth(2.4, 1, 20);
     ctx.beginPath();
-    ctx.arc(preview.x, preview.y, 5, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, rOuter, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(190, 240, 255, 0.98)';
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, rInner, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -1765,37 +2269,42 @@ function drawTrains() {
 function drawClock() {
   ctx.fillStyle = '#96e8ff';
   ctx.font = '700 14px Orbitron';
-  const warnCount = state.diagnostics.sharpCurveIndices.length;
-  const warnText = warnCount > 0 ? `  Sharp Curves: ${warnCount}` : '';
-  ctx.fillText(`Sim Time: ${fmtTime(state.simMinute)}  Zoom: x${state.view.zoom.toFixed(2)}${warnText}`, 16, 24);
+  ctx.fillText(`Sim Time: ${fmtTime(state.simMinute)}`, 16, 24);
 }
 
 function render() {
+  // Always reset transform before frame clear to avoid accumulated transform glitches.
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (state.rules.layers.grid) {
     drawCadGrid();
   }
 
   ctx.save();
-  ctx.setTransform(state.view.zoom, 0, 0, state.view.zoom, state.view.offsetX, state.view.offsetY);
-  if (state.rules.layers.track) {
-    drawTrack();
-    drawTrackDimensions();
-    drawCurveAnnotations();
+  try {
+    ctx.setTransform(state.view.zoom, 0, 0, state.view.zoom, state.view.offsetX, state.view.offsetY);
+    if (state.rules.layers.track) {
+      drawTrack();
+      drawVehicleWidthGuide();
+      drawTrackDimensions();
+      drawCurveAnnotations();
+    }
+    if (state.rules.layers.warnings) {
+      drawTrackWarnings();
+    }
+    drawBuildingTrack();
+    drawPartPreview();
+    if (state.rules.layers.stations) {
+      drawStations();
+    }
+    if (state.rules.layers.trains) {
+      drawTrains();
+    }
+    drawSelectionRect();
+  } finally {
+    // Guarantee identity restore even if any drawing routine throws.
+    ctx.restore();
   }
-  if (state.rules.layers.warnings) {
-    drawTrackWarnings();
-  }
-  drawBuildingTrack();
-  drawPartPreview();
-  if (state.rules.layers.stations) {
-    drawStations();
-  }
-  if (state.rules.layers.trains) {
-    drawTrains();
-  }
-  drawSelectionRect();
-  ctx.restore();
 
   drawClock();
 }
@@ -1804,7 +2313,7 @@ function rebuildStationList() {
   stationList.innerHTML = '';
   for (const st of state.stations) {
     const li = document.createElement('li');
-    li.textContent = `${st.name} (s=${st.s.toFixed(1)})`;
+    li.textContent = st.name;
     if (state.selectedStationIds.has(st.id)) {
       li.classList.add('selected-item');
     }
@@ -1830,17 +2339,17 @@ function updateHint() {
   const mode = state.mode;
   if (mode === 'select') {
     hintText.textContent =
-      'Select mode: Left-click selects, Ctrl/Cmd+click toggles, left-drag pans map, Shift+drag range-selects.';
+      'Select mode: Left-click selects station/train/track segment. Backspace/Delete removes selection. Shift+drag range-selects.';
     return;
   }
-  if (mode === 'part') {
+  if (mode === 'erase') {
     hintText.textContent =
-      'Part mode: choose N-gauge part in palette, click to set anchor, then click to place connected part. Esc resets anchor.';
+      'Erase mode: Left-click track to remove segment. Press Esc to return to Select mode.';
     return;
   }
   if (mode === 'track') {
     hintText.textContent =
-      'Track mode: Left-click to place start/end points. Double-click or right-click commits line. Mouse wheel zooms map.';
+      'Track mode: Left-click start, Left-click end to commit one segment. Use Wide/Detail controls to change view range.';
     return;
   }
   if (mode === 'station') {
@@ -1852,7 +2361,12 @@ function updateHint() {
 
 canvas.addEventListener('contextmenu', (ev) => {
   ev.preventDefault();
-  commitTrackDraft();
+  if (state.mode === 'track') {
+    state.buildingTrack = [];
+    state.trackPreviewPoint = null;
+    state.draftConstraintHeadingRad = null;
+    render();
+  }
 });
 
 canvas.addEventListener('dblclick', (ev) => {
@@ -1861,7 +2375,10 @@ canvas.addEventListener('dblclick', (ev) => {
   }
 
   ev.preventDefault();
-  commitTrackDraft();
+  state.buildingTrack = [];
+  state.trackPreviewPoint = null;
+  state.draftConstraintHeadingRad = null;
+  render();
 });
 
 canvas.addEventListener('mousedown', (ev) => {
@@ -1908,30 +2425,13 @@ canvas.addEventListener('mousemove', (ev) => {
   }
 
   if (state.mode === 'track') {
-    state.trackPreviewPoint = toCanvasPoint(ev);
+    const p = toCanvasPoint(ev);
+    state.trackPreviewPoint = resolveTrackSnapPoint(p).point;
     render();
     return;
   }
 
-  if (state.mode === 'part') {
-    const p = toCanvasPoint(ev);
-    if (state.partBuilder.anchor) {
-      const anchor = state.partBuilder.anchor;
-      const dx = p.x - anchor.x;
-      const dy = p.y - anchor.y;
-      if (Math.hypot(dx, dy) > 0.1) {
-        state.partBuilder.headingRad = Math.atan2(dy, dx);
-      }
-      state.partBuilder.preview = samplePartGeometry(
-        anchor,
-        state.partBuilder.headingRad,
-        state.partBuilder.partType,
-        state.partBuilder.curveTurn
-      );
-    } else {
-      state.partBuilder.preview = null;
-    }
-    render();
+  if (state.mode === 'erase') {
     return;
   }
 
@@ -2005,7 +2505,7 @@ canvas.addEventListener('mouseleave', () => {
     state.view.panDistance = 0;
   }
 
-  if (state.mode === 'track' && state.trackPreviewPoint) {
+  if (state.mode === 'track') {
     state.trackPreviewPoint = null;
     render();
   }
@@ -2015,28 +2515,48 @@ canvas.addEventListener(
   'wheel',
   (ev) => {
     ev.preventDefault();
-
+    ev.stopPropagation();
     const screenPoint = toCanvasScreenPoint(ev);
-    const worldBefore = {
-      x: (screenPoint.x - state.view.offsetX) / state.view.zoom,
-      y: (screenPoint.y - state.view.offsetY) / state.view.zoom
-    };
+    applyWheelZoom(ev, screenPoint);
+  },
+  { passive: false }
+);
 
-    const zoomFactor = ev.deltaY < 0 ? 1.12 : 0.9;
-    const nextZoom = clamp(state.view.zoom * zoomFactor, state.view.minZoom, state.view.maxZoom);
-    if (nextZoom === state.view.zoom) {
+window.addEventListener(
+  'wheel',
+  (ev) => {
+    const targetTag = (ev.target && ev.target.tagName) || '';
+    if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') {
       return;
     }
 
-    state.view.zoom = nextZoom;
-    state.view.offsetX = screenPoint.x - worldBefore.x * state.view.zoom;
-    state.view.offsetY = screenPoint.y - worldBefore.y * state.view.zoom;
-    render();
+    const rect = canvas.getBoundingClientRect();
+    const inCanvas =
+      ev.clientX >= rect.left &&
+      ev.clientX <= rect.right &&
+      ev.clientY >= rect.top &&
+      ev.clientY <= rect.bottom;
+
+    if (!inCanvas) {
+      return;
+    }
+
+    if (ev.target === canvas || (canvas.contains && canvas.contains(ev.target))) {
+      return;
+    }
+
+    ev.preventDefault();
+    const screenPoint = {
+      x: ((ev.clientX - rect.left) / rect.width) * canvas.width,
+      y: ((ev.clientY - rect.top) / rect.height) * canvas.height
+    };
+    applyWheelZoom(ev, screenPoint);
   },
   { passive: false }
 );
 
 canvas.addEventListener('click', (ev) => {
+  const now = performance.now();
   const p0 = toCanvasPoint(ev);
   const x = p0.x;
   const y = p0.y;
@@ -2052,82 +2572,56 @@ canvas.addEventListener('click', (ev) => {
   }
 
   if (state.mode === 'track') {
-    const last = state.buildingTrack[state.buildingTrack.length - 1];
-    let nextPoint = { x, y };
-
-    const snap = snapToTrackEndpoint(nextPoint);
-    if (snap) {
-      nextPoint = { x: snap.point.x, y: snap.point.y };
-      if (!last) {
-        state.draftConstraintHeadingRad = snap.headingRad;
-        setHintTemporary('既存線路の端点にスナップしました。');
-      }
+    // Ignore immediately repeated click events right after commit.
+    if (now - state.lastTrackCommitAt < 120) {
+      return;
     }
+
+    const last = state.buildingTrack[state.buildingTrack.length - 1];
+    const rawPoint = { x, y };
+    let nextPoint = snapToDotGrid(rawPoint);
 
     if (!last) {
       state.buildingTrack.push(nextPoint);
-      commitHistory();
+      state.trackPreviewPoint = nextPoint;
+      setHintTemporary('始点を設定しました。終点をクリックしてください。');
       render();
       return;
     }
 
     const segLen = distance(last, nextPoint);
-    if (segLen < TRACK_CONNECTION_RULES.minSegmentLength) {
+    if (segLen < TRACK_CONNECTION_RULES.endpointEpsilon) {
       setHintTemporary('短すぎる線分は敷設できません。');
       return;
     }
 
-    if (state.buildingTrack.length === 1 && Number.isFinite(state.draftConstraintHeadingRad)) {
-      const h = Math.atan2(nextPoint.y - last.y, nextPoint.x - last.x);
-      const lim = (TRACK_CONNECTION_RULES.maxInitialDeflectionDeg * Math.PI) / 180;
-      if (angleDiffAbs(h, state.draftConstraintHeadingRad) > lim) {
-        setHintTemporary('接続角が急すぎます。既存線路の向きに近づけてください。');
-        return;
+    if (distance(last, nextPoint) > TRACK_CONNECTION_RULES.endpointEpsilon) {
+      addTrackSegment(last, nextPoint);
+      if (state.trackPoints.length === 0) {
+        state.trackPoints = [last, nextPoint];
+      } else {
+        const head = state.trackPoints[0];
+        const tail = state.trackPoints[state.trackPoints.length - 1];
+        if (pointsNear(last, tail)) {
+          state.trackPoints.push(nextPoint);
+        } else if (pointsNear(last, head)) {
+          state.trackPoints.unshift(nextPoint);
+        }
       }
+      state.trackParts = [];
+      updateTrackDiagnostics();
+      state.buildingTrack = [];
+      state.trackPreviewPoint = null;
+      state.draftConstraintHeadingRad = null;
+      state.lastTrackCommitAt = now;
+      commitHistory();
     }
-
-    if (isIllegalIntersection(last, nextPoint)) {
-      setHintTemporary('既存線路と不正に交差するため敷設できません。');
-      return;
-    }
-
-    if (distance(last, nextPoint) > 2) {
-      state.buildingTrack.push(nextPoint);
-    }
-    commitHistory();
     render();
     return;
   }
 
-  if (state.mode === 'part') {
-    const clickPoint = { x, y };
-
-    if (!state.partBuilder.anchor) {
-      const fallback = anchorFromTrackEnd();
-      if (fallback) {
-        state.partBuilder.anchor = { x: fallback.x, y: fallback.y };
-        state.partBuilder.headingRad = fallback.headingRad;
-      } else {
-        state.partBuilder.anchor = clickPoint;
-        state.partBuilder.headingRad = 0;
-      }
-      render();
-      return;
-    }
-
-    const dx = clickPoint.x - state.partBuilder.anchor.x;
-    const dy = clickPoint.y - state.partBuilder.anchor.y;
-    if (Math.hypot(dx, dy) > 0.5) {
-      state.partBuilder.headingRad = Math.atan2(dy, dx);
-    }
-
-    const placed = samplePartGeometry(
-      state.partBuilder.anchor,
-      state.partBuilder.headingRad,
-      state.partBuilder.partType,
-      state.partBuilder.curveTurn
-    );
-    commitPartPlacement(placed);
+  if (state.mode === 'erase') {
+    eraseTrackAtPoint({ x, y });
     return;
   }
 
@@ -2151,18 +2645,16 @@ canvas.addEventListener('click', (ev) => {
   }
 });
 
-modeSelect.addEventListener('change', () => {
-  state.mode = modeSelect.value;
-  state.trackPreviewPoint = null;
-  state.draftConstraintHeadingRad = null;
-  state.selection.active = false;
-  state.selection.start = null;
-  state.selection.current = null;
-  state.selection.append = false;
-  syncSelectionFilterMenu();
-  syncPartPaletteMenu();
-  updateHint();
-  render();
+modeSelectBtn.addEventListener('click', () => {
+  setMode('select');
+});
+
+modeTrackBtn.addEventListener('click', () => {
+  setMode('track');
+});
+
+modeEraseBtn.addEventListener('click', () => {
+  setMode('erase');
 });
 
 undoBtn.addEventListener('click', () => {
@@ -2193,19 +2685,25 @@ filterTrain.addEventListener('change', () => {
   state.selectionFilters.train = filterTrain.checked;
 });
 
-partTypeSelect.addEventListener('change', () => {
-  state.partBuilder.partType = partTypeSelect.value;
-  render();
-});
+if (partTypeSelect) {
+  partTypeSelect.addEventListener('change', () => {
+    state.partBuilder.partType = partTypeSelect.value;
+    render();
+  });
+}
 
-curveTurnSelect.addEventListener('change', () => {
-  state.partBuilder.curveTurn = curveTurnSelect.value;
-  render();
-});
+if (curveTurnSelect) {
+  curveTurnSelect.addEventListener('change', () => {
+    state.partBuilder.curveTurn = curveTurnSelect.value;
+    render();
+  });
+}
 
-resetPartAnchorBtn.addEventListener('click', () => {
-  resetPartAnchor();
-});
+if (resetPartAnchorBtn) {
+  resetPartAnchorBtn.addEventListener('click', () => {
+    resetPartAnchor();
+  });
+}
 
 playBtn.addEventListener('click', () => {
   state.isRunning = !state.isRunning;
@@ -2217,12 +2715,16 @@ speedRange.addEventListener('input', () => {
   speedLabel.textContent = `x${state.simSpeed}`;
 });
 
-minRadiusRange.addEventListener('input', () => {
-  state.rules.minRadius = Number(minRadiusRange.value);
-  minRadiusLabel.textContent = `R>=${state.rules.minRadius}`;
-  updateTrackDiagnostics();
-  render();
-});
+if (minRadiusRange) {
+  minRadiusRange.addEventListener('input', () => {
+    state.rules.minRadius = Number(minRadiusRange.value);
+    if (minRadiusLabel) {
+      minRadiusLabel.textContent = '';
+    }
+    updateTrackDiagnostics();
+    render();
+  });
+}
 
 trackPresetSelect.addEventListener('change', () => {
   state.rules.trackPreset = trackPresetSelect.value;
@@ -2244,6 +2746,13 @@ layerTrack.addEventListener('change', () => {
   render();
 });
 
+if (layerVehicleGuide) {
+  layerVehicleGuide.addEventListener('change', () => {
+    state.rules.layers.vehicleGuide = layerVehicleGuide.checked;
+    render();
+  });
+}
+
 layerStations.addEventListener('change', () => {
   state.rules.layers.stations = layerStations.checked;
   render();
@@ -2254,16 +2763,20 @@ layerTrains.addEventListener('change', () => {
   render();
 });
 
-layerDimensions.addEventListener('change', () => {
-  state.rules.layers.dimensions = layerDimensions.checked;
-  state.rules.showDimensions = state.rules.layers.dimensions;
-  render();
-});
+if (layerDimensions) {
+  layerDimensions.addEventListener('change', () => {
+    state.rules.layers.dimensions = layerDimensions.checked;
+    state.rules.showDimensions = state.rules.layers.dimensions;
+    render();
+  });
+}
 
-layerCurveInfo.addEventListener('change', () => {
-  state.rules.layers.curveInfo = layerCurveInfo.checked;
-  render();
-});
+if (layerCurveInfo) {
+  layerCurveInfo.addEventListener('change', () => {
+    state.rules.layers.curveInfo = layerCurveInfo.checked;
+    render();
+  });
+}
 
 layerWarnings.addEventListener('change', () => {
   state.rules.layers.warnings = layerWarnings.checked;
@@ -2275,6 +2788,18 @@ resetBtn.addEventListener('click', () => {
   updateTrains();
   render();
 });
+
+if (zoomInBtn) {
+  zoomInBtn.addEventListener('click', () => {
+    zoomByStep(1.05);
+  });
+}
+
+if (zoomOutBtn) {
+  zoomOutBtn.addEventListener('click', () => {
+    zoomByStep(0.55);
+  });
+}
 
 trainForm.addEventListener('submit', (ev) => {
   ev.preventDefault();
@@ -2308,15 +2833,16 @@ window.addEventListener('keydown', (ev) => {
   }
 
   if (ev.key === 'Escape') {
-    if (cancelTrackBuilding()) {
-      setHintTemporary('Track draft canceled.');
+    if (state.mode === 'erase') {
+      setMode('select');
       ev.preventDefault();
       return;
     }
-    if (state.mode === 'part' && state.partBuilder.anchor) {
-      resetPartAnchor();
-      setHintTemporary('Part anchor reset.');
+
+    if (cancelTrackBuilding()) {
+      setHintTemporary('Track chain finished.');
       ev.preventDefault();
+      return;
     }
     return;
   }
@@ -2334,10 +2860,36 @@ window.addEventListener('keydown', (ev) => {
   }
 
   if (!editing && (ev.key === 'Delete' || ev.key === 'Backspace')) {
-    if (state.mode === 'select' && (state.selectedStationIds.size > 0 || state.selectedTrainIds.size > 0)) {
+    if (
+      state.mode === 'select' &&
+      (state.selectedStationIds.size > 0 ||
+        state.selectedTrainIds.size > 0 ||
+        state.selectedTrackSegmentIndex !== null)
+    ) {
       ev.preventDefault();
       deleteSelectedEntities();
     }
+  }
+
+  if (!editing && (ev.key === '+' || ev.key === '=')) {
+    ev.preventDefault();
+    zoomByStep(1.05);
+    return;
+  }
+
+  if (!editing && (ev.key === '-' || ev.key === '_')) {
+    ev.preventDefault();
+    zoomByStep(0.6);
+    return;
+  }
+
+  if (!editing && ev.key === '0') {
+    ev.preventDefault();
+    state.view.zoom = 1;
+    state.view.offsetX = 0;
+    state.view.offsetY = 0;
+    updateZoomHud();
+    render();
   }
 });
 
@@ -2358,18 +2910,32 @@ function tick(ts) {
 updateHint();
 syncSelectionFilterMenu();
 syncPartPaletteMenu();
-minRadiusLabel.textContent = `R>=${state.rules.minRadius}`;
+syncModeButtons();
+if (minRadiusLabel) {
+  minRadiusLabel.textContent = '';
+}
 trackPresetSelect.value = state.rules.trackPreset;
 renderModeSelect.value = state.rules.renderMode;
 layerGrid.checked = state.rules.layers.grid;
 layerTrack.checked = state.rules.layers.track;
+if (layerVehicleGuide) {
+  layerVehicleGuide.checked = state.rules.layers.vehicleGuide;
+}
 layerStations.checked = state.rules.layers.stations;
 layerTrains.checked = state.rules.layers.trains;
-layerDimensions.checked = state.rules.layers.dimensions;
-layerCurveInfo.checked = state.rules.layers.curveInfo;
+if (layerDimensions) {
+  layerDimensions.checked = state.rules.layers.dimensions;
+}
+if (layerCurveInfo) {
+  layerCurveInfo.checked = state.rules.layers.curveInfo;
+}
 layerWarnings.checked = state.rules.layers.warnings;
-partTypeSelect.value = state.partBuilder.partType;
-curveTurnSelect.value = state.partBuilder.curveTurn;
+if (partTypeSelect) {
+  partTypeSelect.value = state.partBuilder.partType;
+}
+if (curveTurnSelect) {
+  curveTurnSelect.value = state.partBuilder.curveTurn;
+}
 if (!loadProjectFromLocal()) {
   updateTrains();
   updateTrackDiagnostics();
@@ -2379,6 +2945,8 @@ if (!loadProjectFromLocal()) {
 } else {
   setHintTemporary('Loaded last saved project (local storage).', 1400);
 }
+
+updateZoomHud();
 
 window.addEventListener('resize', () => {
   updateHudLayoutMetrics();
