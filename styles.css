@@ -56,6 +56,28 @@ body {
   background: #f3f3f3;
 }
 
+.layer-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 10px;
+  background: #f1f1f1;
+  border: 1px solid #cecece;
+  border-radius: 6px;
+}
+
+.layer-panel[hidden] {
+  display: none;
+}
+
+.layer-panel label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
 #hint {
   margin: 0;
   font-size: 13px;
