@@ -14,7 +14,7 @@ if not exist "%PKG%" (
 if not exist "%NODE_MODULES%" (
   echo Installing dependencies...
   pushd "%BASE_DIR%"
-  call npm.cmd install
+  call npm.cmd install --include=dev
   if errorlevel 1 (
     echo [ERROR] npm install failed.
     popd
