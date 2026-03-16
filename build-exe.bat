@@ -14,7 +14,7 @@ pushd "%BASE_DIR%"
 
 if not exist "node_modules" (
   echo Installing dependencies...
-  call npm install
+  call npm.cmd install
   if errorlevel 1 (
     echo [ERROR] npm install failed.
     popd
@@ -24,7 +24,7 @@ if not exist "node_modules" (
 )
 
 echo Building Windows EXE (NSIS + Portable)...
-call npm run dist:win
+call npm.cmd run dist:win
 set "EXIT_CODE=%ERRORLEVEL%"
 
 popd
