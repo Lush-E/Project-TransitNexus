@@ -36,6 +36,7 @@ const state = {
   trains: [],
   selection: null,
   draggingSelection: false,
+  selectionMoved: false,
   lastDragWorld: null,
   mousePreview: null,
   draftingTrackStart: null,
@@ -49,7 +50,8 @@ const state = {
     offsetY: 0,
     panning: false,
     panLastScreen: null,
-    panRenderQueued: false
+    panRenderQueued: false,
+    renderQueued: false
   },
   settings: {
     gridSize: 1,
@@ -65,11 +67,85 @@ const state = {
     platform: true,
     train: true,
     ruler: true
-  }
+  },
+  history: [],
+  future: []
 };
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+function requestRender() {
+  if (state.view.renderQueued) {
+    return;
+  }
+  state.view.renderQueued = true;
+  requestAnimationFrame(() => {
+    state.view.renderQueued = false;
+    render();
+  });
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function snapshotState() {
+  return {
+    tracks: clone(state.tracks),
+    platforms: clone(state.platforms),
+    trains: clone(state.trains)
+  };
+}
+
+function snapshotsEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function applySnapshot(snap) {
+  state.tracks = clone(snap.tracks || []);
+  state.platforms = clone(snap.platforms || []);
+  state.trains = clone(snap.trains || []);
+  state.selection = null;
+  state.draggingSelection = false;
+  state.selectionMoved = false;
+  state.lastDragWorld = null;
+  state.draftingTrackStart = null;
+  state.draftingPlatformStart = null;
+  state.draftingPlatformCurrent = null;
+  render();
+}
+
+function commitHistory() {
+  const snap = snapshotState();
+  const last = state.history[state.history.length - 1];
+  if (!last || !snapshotsEqual(last, snap)) {
+    state.history.push(snap);
+    if (state.history.length > 300) {
+      state.history.shift();
+    }
+  }
+  state.future = [];
+}
+
+function undo() {
+  if (state.history.length <= 1) {
+    return;
+  }
+  const current = state.history.pop();
+  state.future.push(current);
+  const prev = state.history[state.history.length - 1];
+  applySnapshot(prev);
+}
+
+function redo() {
+  if (state.future.length === 0) {
+    return;
+  }
+  const next = state.future.pop();
+  state.history.push(next);
+  applySnapshot(next);
 }
 
 function snap(v, gridSize) {
@@ -126,6 +202,7 @@ function setMode(mode) {
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
   state.draggingSelection = false;
+  state.selectionMoved = false;
   state.lastDragWorld = null;
 
   for (const btn of modeButtons) {
@@ -134,7 +211,7 @@ function setMode(mode) {
 
   const hints = {
     select: 'Select: クリックで選択 / ドラッグで移動 / Deleteで削除',
-    track: 'Track: 2クリックで敷設 / Wheel: Zoom / 右ドラッグ: Pan',
+    track: 'Track: 2クリックで敷設 / Altで吸着一時OFF / Wheel: Zoom / 右ドラッグ: Pan',
     platform: 'Platform: ドラッグでホーム範囲を作成',
     train: 'Train: 線路近くをクリックして先頭車を配置',
     car: 'Add Car: 列車をクリックして車両を追加',
@@ -196,14 +273,15 @@ function getTrackNodes() {
   return Array.from(nodes.values());
 }
 
-function findNearestTrackNode(point) {
+function findNearestTrackNode(point, snapStrength = 'normal') {
   const nodes = getTrackNodes();
   if (nodes.length === 0) {
     return null;
   }
 
-  // Weak snapping: helps joining nodes without being too aggressive.
-  const snapRadiusWorld = clamp(12 / Math.max(0.0001, state.view.zoom), 0.35, 1.2);
+  // Keep snap radius modest so branching remains easy.
+  const baseRadiusPx = snapStrength === 'light' ? 5.5 : 8;
+  const snapRadiusWorld = clamp(baseRadiusPx / Math.max(0.0001, state.view.zoom), 0.14, 0.45);
   let best = null;
   for (const node of nodes) {
     const d = distance(point, node);
@@ -214,12 +292,19 @@ function findNearestTrackNode(point) {
   return best;
 }
 
-function resolveTrackPoint(rawPoint, startPoint) {
+function resolveTrackPoint(rawPoint, startPoint, options = {}) {
+  const { enableNodeSnap = true } = options;
   const constrained = applyTrackConstraint(rawPoint, startPoint);
-  const nearNode = findNearestTrackNode(constrained);
-  if (nearNode) {
+
+  if (!enableNodeSnap) {
+    return constrained;
+  }
+
+  const nearNode = findNearestTrackNode(constrained, startPoint ? 'light' : 'normal');
+  if (nearNode && (!startPoint || distance(startPoint, nearNode) > 0.0001)) {
     return { x: nearNode.x, y: nearNode.y };
   }
+
   return constrained;
 }
 
@@ -357,35 +442,6 @@ function drawTracks() {
     ctx.stroke();
   }
 
-  // Track centerline for clearer alignment.
-  ctx.strokeStyle = 'rgba(233, 248, 255, 0.98)';
-  ctx.lineWidth = centerWorldWidth;
-  ctx.lineCap = 'butt';
-  ctx.lineJoin = 'round';
-  for (const seg of state.tracks) {
-    ctx.beginPath();
-    ctx.moveTo(seg.a.x, seg.a.y);
-    ctx.lineTo(seg.b.x, seg.b.y);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = 'rgba(233, 248, 255, 0.98)';
-  const centerJoinRadius = centerWorldWidth * 0.54;
-  for (const seg of state.tracks) {
-    const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
-    const bCount = nodeCounts.get(endpointKey(seg.b)) || 0;
-    if (aCount >= 2) {
-      ctx.beginPath();
-      ctx.arc(seg.a.x, seg.a.y, centerJoinRadius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (bCount >= 2) {
-      ctx.beginPath();
-      ctx.arc(seg.b.x, seg.b.y, centerJoinRadius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
   // Keep rounded appearance at branch/connection nodes only.
   ctx.fillStyle = '#25698a';
   const joinRadius = trackWorldWidth * 0.51;
@@ -400,6 +456,35 @@ function drawTracks() {
     if (bCount >= 2) {
       ctx.beginPath();
       ctx.arc(seg.b.x, seg.b.y, joinRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Track centerline for clearer alignment. Draw on top so joins stay visible.
+  ctx.strokeStyle = 'rgba(233, 248, 255, 0.98)';
+  ctx.lineWidth = centerWorldWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const seg of state.tracks) {
+    ctx.beginPath();
+    ctx.moveTo(seg.a.x, seg.a.y);
+    ctx.lineTo(seg.b.x, seg.b.y);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = 'rgba(233, 248, 255, 0.98)';
+  const centerJoinRadius = Math.max(centerWorldWidth * 0.92, 0.9 / state.view.zoom);
+  for (const seg of state.tracks) {
+    const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
+    const bCount = nodeCounts.get(endpointKey(seg.b)) || 0;
+    if (aCount >= 2) {
+      ctx.beginPath();
+      ctx.arc(seg.a.x, seg.a.y, centerJoinRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (bCount >= 2) {
+      ctx.beginPath();
+      ctx.arc(seg.b.x, seg.b.y, centerJoinRadius, 0, Math.PI * 2);
       ctx.fill();
     }
   }
@@ -595,7 +680,7 @@ function render() {
     drawTrains();
   }
   ctx.restore();
-  if (state.layers.ruler) {
+  if (state.layers.ruler && !state.view.panning) {
     drawRuler();
   }
 }
@@ -699,16 +784,25 @@ function deleteSelection() {
     return;
   }
 
+  let deleted = false;
+
   if (state.selection.type === 'track') {
     state.tracks.splice(state.selection.index, 1);
+    deleted = true;
   }
   if (state.selection.type === 'platform') {
     state.platforms.splice(state.selection.index, 1);
+    deleted = true;
   }
   if (state.selection.type === 'train') {
     state.trains.splice(state.selection.index, 1);
+    deleted = true;
   }
   state.selection = null;
+
+  if (deleted) {
+    commitHistory();
+  }
 }
 
 canvas.addEventListener('contextmenu', (ev) => {
@@ -729,7 +823,7 @@ canvas.addEventListener('wheel', (ev) => {
   state.view.zoom = nextZoom;
   state.view.offsetX = screen.x - worldBefore.x * state.view.zoom;
   state.view.offsetY = screen.y - worldBefore.y * state.view.zoom;
-  render();
+  requestRender();
 }, { passive: false });
 
 canvas.addEventListener('mousemove', (ev) => {
@@ -741,13 +835,7 @@ canvas.addEventListener('mousemove', (ev) => {
     state.view.offsetX += dx;
     state.view.offsetY += dy;
     state.view.panLastScreen = screen;
-    if (!state.view.panRenderQueued) {
-      state.view.panRenderQueued = true;
-      requestAnimationFrame(() => {
-        state.view.panRenderQueued = false;
-        render();
-      });
-    }
+    requestRender();
     return;
   }
 
@@ -763,17 +851,20 @@ canvas.addEventListener('mousemove', (ev) => {
     if (Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001) {
       moveSelectionBy(dx, dy);
       state.lastDragWorld = target;
-      render();
+      state.selectionMoved = true;
+      requestRender();
     }
     return;
   }
 
-  const p = state.mode === 'track' ? resolveTrackPoint(raw, state.draftingTrackStart) : quantizePoint(raw);
+  const p = state.mode === 'track'
+    ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
+    : quantizePoint(raw);
   state.mousePreview = p;
   if (state.mode === 'platform' && state.draftingPlatformStart) {
     state.draftingPlatformCurrent = p;
   }
-  render();
+  requestRender();
 });
 
 canvas.addEventListener('mousedown', (ev) => {
@@ -794,16 +885,20 @@ canvas.addEventListener('mousedown', (ev) => {
     state.selection = pickEntityAt(raw);
     if (state.selection) {
       state.draggingSelection = true;
+      state.selectionMoved = false;
       state.lastDragWorld = state.settings.snap ? p : raw;
     } else {
       state.draggingSelection = false;
+      state.selectionMoved = false;
       state.lastDragWorld = null;
     }
     render();
     return;
   }
 
-  const p = state.mode === 'track' ? resolveTrackPoint(raw, state.draftingTrackStart) : quantizePoint(raw);
+  const p = state.mode === 'track'
+    ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
+    : quantizePoint(raw);
 
   if (state.mode === 'track') {
     if (!state.draftingTrackStart) {
@@ -811,6 +906,7 @@ canvas.addEventListener('mousedown', (ev) => {
     } else {
       if (distance(state.draftingTrackStart, p) >= state.settings.minTrackLength) {
         state.tracks.push({ a: state.draftingTrackStart, b: p });
+        commitHistory();
       }
       state.draftingTrackStart = null;
     }
@@ -834,6 +930,7 @@ canvas.addEventListener('mousedown', (ev) => {
         angle: pr.angle,
         cars: 4
       });
+      commitHistory();
       render();
     }
     return;
@@ -849,14 +946,17 @@ canvas.addEventListener('mousedown', (ev) => {
     }
     if (best && best.dist < 3.2) {
       best.tr.cars = Math.min(10, best.tr.cars + 1);
+      commitHistory();
       render();
     }
     return;
   }
 
   if (state.mode === 'erase') {
-    eraseAt(raw);
-    render();
+    if (eraseAt(raw)) {
+      commitHistory();
+      render();
+    }
   }
 });
 
@@ -868,7 +968,11 @@ canvas.addEventListener('mouseup', () => {
   }
 
   if (state.mode === 'select' && state.draggingSelection) {
+    if (state.selectionMoved) {
+      commitHistory();
+    }
     state.draggingSelection = false;
+    state.selectionMoved = false;
     state.lastDragWorld = null;
     return;
   }
@@ -884,6 +988,7 @@ canvas.addEventListener('mouseup', () => {
 
   if (w > 1 && h > 1) {
     state.platforms.push({ x, y, w, h });
+    commitHistory();
   }
 
   state.draftingPlatformStart = null;
@@ -892,12 +997,16 @@ canvas.addEventListener('mouseup', () => {
 });
 
 clearBtn.addEventListener('click', () => {
+  if (state.tracks.length === 0 && state.platforms.length === 0 && state.trains.length === 0) {
+    return;
+  }
   state.tracks = [];
   state.platforms = [];
   state.trains = [];
   state.draftingTrackStart = null;
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
+  commitHistory();
   render();
 });
 
@@ -973,6 +1082,21 @@ minTrackLenRange.addEventListener('input', () => {
 });
 
 window.addEventListener('keydown', (ev) => {
+  const mod = ev.ctrlKey || ev.metaKey;
+  const key = ev.key.toLowerCase();
+
+  if (mod && !ev.altKey && key === 'z' && !ev.shiftKey) {
+    ev.preventDefault();
+    undo();
+    return;
+  }
+
+  if (mod && !ev.altKey && (key === 'y' || (key === 'z' && ev.shiftKey))) {
+    ev.preventDefault();
+    redo();
+    return;
+  }
+
   if (ev.key === 'Escape') {
     state.draftingTrackStart = null;
     state.draftingPlatformStart = null;
@@ -999,5 +1123,6 @@ window.addEventListener('keydown', (ev) => {
 // Start with a composition close to the sample image scale.
 state.view.offsetX = canvas.width * 0.05;
 state.view.offsetY = canvas.height * 0.62;
+commitHistory();
 refreshSettingLabels();
 render();
