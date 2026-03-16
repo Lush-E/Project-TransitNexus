@@ -19,16 +19,23 @@
         <h1>TransitNexus</h1>
       </div>
       <div class="controls">
-        <label class="control-block">
+        <div class="control-block mode-switch" aria-label="Mode">
           <span>Mode</span>
-          <select id="modeSelect">
-            <option value="select">Select</option>
-            <option value="part">Part</option>
-            <option value="track">Track</option>
-            <option value="station">Station</option>
-            <option value="train">Train</option>
-          </select>
-        </label>
+          <div class="mode-buttons" role="group" aria-label="Mode Buttons">
+            <button id="modeSelectBtn" class="action-btn mode-btn" type="button" title="Select">
+              <span class="mode-icon">&#x2196;</span>
+              <span>Select</span>
+            </button>
+            <button id="modeTrackBtn" class="action-btn mode-btn" type="button" title="Track">
+              <span class="mode-icon">&#x2550;</span>
+              <span>Track</span>
+            </button>
+            <button id="modeEraseBtn" class="action-btn mode-btn" type="button" title="Erase">
+              <span class="mode-icon">&#x232B;</span>
+              <span>Erase</span>
+            </button>
+          </div>
+        </div>
         <button id="undoBtn" class="action-btn ghost">Undo</button>
         <button id="redoBtn" class="action-btn ghost">Redo</button>
         <button id="deleteSelectedBtn" class="action-btn ghost">Delete Selected</button>
@@ -37,11 +44,6 @@
           <span>Speed</span>
           <input id="speedRange" type="range" min="1" max="30" value="8" />
           <span id="speedLabel">x8</span>
-        </label>
-        <label class="control-block radius-block">
-          <span>Min Radius</span>
-          <input id="minRadiusRange" type="range" min="40" max="400" value="140" />
-          <span id="minRadiusLabel">R>=140</span>
         </label>
         <label class="control-block radius-block">
           <span>Track Preset</span>
@@ -58,6 +60,14 @@
             <option value="realistic">Realistic</option>
           </select>
         </label>
+        <div class="control-block zoom-block" aria-label="Zoom Controls">
+          <span>View Scale</span>
+          <div class="zoom-controls" role="group" aria-label="Zoom Buttons">
+            <button id="zoomOutBtn" class="action-btn ghost" type="button" title="Show Wider Area">Wide</button>
+            <span id="zoomLabel">1.0x</span>
+            <button id="zoomInBtn" class="action-btn ghost" type="button" title="Show More Detail">Detail</button>
+          </div>
+        </div>
         <button id="resetBtn" class="action-btn ghost">Reset Time</button>
       </div>
     </header>
@@ -75,33 +85,13 @@
           <label><input id="filterObject" type="checkbox" /> Object</label>
           <label><input id="filterTrain" type="checkbox" checked /> Train</label>
         </section>
-        <section id="partPaletteMenu" class="select-filter-menu part-palette" aria-label="Track Parts">
-          <h3>Track Parts</h3>
-          <label>
-            <span>Part Type</span>
-            <select id="partTypeSelect">
-              <option value="straight_124">Straight 124</option>
-              <option value="curve_r140_45">Curve R140 45deg</option>
-              <option value="curve_r280_45">Curve R280 45deg</option>
-            </select>
-          </label>
-          <label>
-            <span>Curve Turn</span>
-            <select id="curveTurnSelect">
-              <option value="left">Left</option>
-              <option value="right">Right</option>
-            </select>
-          </label>
-          <button id="resetPartAnchorBtn" class="action-btn ghost" type="button">Reset Anchor</button>
-        </section>
         <section id="layerMenu" class="select-filter-menu layer-menu" aria-label="Display Layers">
           <h3>Layers</h3>
           <label><input id="layerGrid" type="checkbox" checked /> Grid</label>
           <label><input id="layerTrack" type="checkbox" checked /> Track</label>
+          <label><input id="layerVehicleGuide" type="checkbox" checked /> Vehicle Width Guide (3000mm fixed)</label>
           <label><input id="layerStations" type="checkbox" checked /> Stations</label>
           <label><input id="layerTrains" type="checkbox" checked /> Trains</label>
-          <label><input id="layerDimensions" type="checkbox" checked /> Dimensions</label>
-          <label><input id="layerCurveInfo" type="checkbox" checked /> Curve R/Angle</label>
           <label><input id="layerWarnings" type="checkbox" checked /> Warnings</label>
         </section>
         <canvas id="mapCanvas" width="980" height="620"></canvas>
