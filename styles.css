@@ -1,0 +1,102 @@
+:root {
+  --bg: #e5e5e5;
+  --line: #25698a;
+  --platform: #8a8a8a;
+  --car: #f2a386;
+  --car-stroke: #ef7f50;
+  --head: #151515;
+  --ink: #1d1d1d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Yu Gothic UI", "Meiryo", sans-serif;
+  color: var(--ink);
+  background: #dcdcdc;
+}
+
+.toolbar {
+  display: grid;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #f7f7f7;
+  border-bottom: 1px solid #c6c6c6;
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tool {
+  border: 1px solid #919191;
+  background: #ffffff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tool.active {
+  background: #d9edf8;
+  border-color: #2f6f8f;
+}
+
+.tool.ghost {
+  background: #f3f3f3;
+}
+
+#hint {
+  margin: 0;
+  font-size: 13px;
+}
+
+.track-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 8px 10px;
+  background: #efefef;
+  border: 1px solid #cecece;
+  border-radius: 6px;
+}
+
+.track-settings label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.track-settings select,
+.track-settings input[type="range"] {
+  cursor: pointer;
+}
+
+.track-settings .inline-check {
+  min-width: 68px;
+}
+
+.stage-wrap {
+  padding: 10px;
+}
+
+#stage {
+  width: 100%;
+  max-width: 1400px;
+  height: auto;
+  border: 1px solid #b9b9b9;
+  background: var(--bg);
+  display: block;
+}
