@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rail Draft Prototype</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <h1>Rail Draft Prototype</h1>
+      <div class="tools">
+        <button data-mode="track" class="tool active">Track</button>
+        <button data-mode="platform" class="tool">Platform</button>
+        <button data-mode="train" class="tool">Train</button>
+        <button data-mode="car" class="tool">Add Car</button>
+        <button data-mode="erase" class="tool">Erase</button>
+        <button id="clearBtn" class="tool ghost">Clear</button>
+      </div>
+      <p id="hint">Track: 始点をクリックして終点をクリック</p>
+      <section class="track-settings" aria-label="Track Laying Settings">
+        <label>
+          Dot Pitch
+          <select id="gridSizeSelect">
+            <option value="1" selected>1 dot (10cm)</option>
+            <option value="2">2 dot (20cm)</option>
+            <option value="5">5 dot (50cm)</option>
+          </select>
+        </label>
+        <label class="inline-check">
+          <input id="snapToggle" type="checkbox" checked />
+          Snap
+        </label>
+        <label class="inline-check">
+          <input id="orthoToggle" type="checkbox" />
+          Ortho
+        </label>
+        <label>
+          Track Width
+          <input id="trackWidthRange" type="range" min="0.6" max="3.2" step="0.1" value="1.4" />
+          <span id="trackWidthLabel">1.4 dot</span>
+        </label>
+        <label>
+          Min Length
+          <input id="minTrackLenRange" type="range" min="1" max="20" step="0.5" value="3" />
+          <span id="minTrackLenLabel">3.0 dot</span>
+        </label>
+      </section>
+    </header>
+
+    <main class="stage-wrap">
+      <canvas id="stage" width="1400" height="760"></canvas>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
