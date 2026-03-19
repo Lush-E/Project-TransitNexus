@@ -3,16 +3,15 @@ setlocal
 
 set "BASE_DIR=%~dp0"
 set "PKG=%BASE_DIR%package.json"
-set "NODE_MODULES=%BASE_DIR%node_modules"
-
 if not exist "%PKG%" (
   echo [ERROR] package.json not found: %PKG%
   pause
   exit /b 1
 )
 
-if not exist "%NODE_MODULES%" (
-  echo Installing dependencies...
+echo Checking dependencies...
+if not exist "%BASE_DIR%node_modules\electron\cli.js" (
+  echo Missing dependency detected. Installing...
   pushd "%BASE_DIR%"
   call npm.cmd install --include=dev
   if errorlevel 1 (

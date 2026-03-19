@@ -5,6 +5,7 @@
   "description": "Rail drafting prototype desktop app",
   "main": "electron-main.js",
   "scripts": {
+    "prestart": "node -e \"try{require.resolve('electron/cli.js')}catch(e){process.exit(1)}\" || npm install --include=dev",
     "start": "electron .",
     "dist:win": "electron-builder --win nsis --x64",
     "dist:portable": "electron-builder --win portable --x64"
