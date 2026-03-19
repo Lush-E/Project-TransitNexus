@@ -11,16 +11,25 @@ const layerPlatform = document.getElementById('layerPlatform');
 const layerTrain = document.getElementById('layerTrain');
 const layerRuler = document.getElementById('layerRuler');
 const modeButtons = Array.from(document.querySelectorAll('.tool[data-mode]'));
+const zoomStat = document.getElementById('zoomStat');
+const countStat = document.getElementById('countStat');
 const gridSizeSelect = document.getElementById('gridSizeSelect');
 const snapToggle = document.getElementById('snapToggle');
 const orthoToggle = document.getElementById('orthoToggle');
 const trackWidthRange = document.getElementById('trackWidthRange');
 const trackWidthLabel = document.getElementById('trackWidthLabel');
+const trackLevelInput = document.getElementById('trackLevelInput');
+const trackLineTypeSelect = document.getElementById('trackLineTypeSelect');
+const trackColorInput = document.getElementById('trackColorInput');
 const minTrackLenRange = document.getElementById('minTrackLenRange');
 const minTrackLenLabel = document.getElementById('minTrackLenLabel');
 
 const DOT_CM = 50; // 1 grid cell = 50cm
 const CLEARANCE_HALF_WIDTH_DOT = 3; // 1500mm each side (3000mm total)
+const PAPER_COLOR = '#ffffff';
+const ZOOM_BASELINE = 13.9; // Treat 1390% as 0% in status display.
+const PLATFORM_WIDTH_DOT = 1.4;
+const PLATFORM_MIN_LENGTH_DOT = 0.6;
 const TRAIN_DIM = {
   carLengthDot: 20,
   carHeightDot: 2.8,
@@ -43,7 +52,7 @@ const state = {
   draftingPlatformStart: null,
   draftingPlatformCurrent: null,
   view: {
-    zoom: 5,
+    zoom: ZOOM_BASELINE,
     minZoom: 0.08,
     maxZoom: 26,
     offsetX: 0,
@@ -58,6 +67,9 @@ const state = {
     snap: true,
     ortho: false,
     trackWidth: 2,
+    trackLevel: 0,
+    trackLineType: 'solid',
+    trackColor: '#25698a',
     minTrackLength: 3
   },
   layers: {
@@ -167,6 +179,13 @@ function screenToWorld(p) {
   };
 }
 
+function worldToScreen(p) {
+  return {
+    x: p.x * state.view.zoom + state.view.offsetX,
+    y: p.y * state.view.zoom + state.view.offsetY
+  };
+}
+
 function toCanvasPoint(ev) {
   return screenToWorld(toCanvasScreenPoint(ev));
 }
@@ -212,7 +231,7 @@ function setMode(mode) {
   const hints = {
     select: 'Select: クリックで選択 / ドラッグで移動 / Deleteで削除',
     track: 'Track: 2クリックで敷設 / Altで吸着一時OFF / Wheel: Zoom / 右ドラッグ: Pan',
-    platform: 'Platform: ドラッグでホーム範囲を作成',
+    platform: 'Platform: 2クリックで敷設（連続入力可） / Escで終了',
     train: 'Train: 線路近くをクリックして先頭車を配置',
     car: 'Add Car: 列車をクリックして車両を追加',
     erase: 'Erase: クリックした要素を削除'
@@ -308,16 +327,282 @@ function resolveTrackPoint(rawPoint, startPoint, options = {}) {
   return constrained;
 }
 
+function getTrackWorldWidth() {
+  const baseScreenWidth = state.settings.trackWidth * state.view.zoom;
+  const trackScreenWidth = Math.max(baseScreenWidth, 2.8);
+  return trackScreenWidth / state.view.zoom;
+}
+
+function getPreviewWorldWidth() {
+  const baseScreenWidth = state.settings.trackWidth * state.view.zoom;
+  const trackScreenWidth = Math.max(baseScreenWidth, 2.8);
+  const previewScreenWidth = Math.max(trackScreenWidth * 0.72, 1.8);
+  return previewScreenWidth / state.view.zoom;
+}
+
+function normalizeTrackColor(value) {
+  return typeof value === 'string' && value ? value : '#25698a';
+}
+
+function normalizeTrackLineType(value) {
+  return value === 'dashed' || value === 'dotted' ? value : 'solid';
+}
+
+function normalizeTrackLevel(value) {
+  const n = Number(value);
+  if (Number.isNaN(n)) {
+    return 0;
+  }
+  return Math.round(clamp(n, -9, 9));
+}
+
+function applyTrackLineStyle(seg) {
+  const lineType = normalizeTrackLineType(seg.lineType);
+  ctx.strokeStyle = normalizeTrackColor(seg.color);
+  if (lineType === 'dashed') {
+    ctx.setLineDash([1.15, 0.78]);
+    return;
+  }
+  if (lineType === 'dotted') {
+    ctx.setLineDash([0.22, 0.5]);
+    return;
+  }
+  ctx.setLineDash([]);
+}
+
+function segmentIntersectionPoint(a1, a2, b1, b2) {
+  const r = { x: a2.x - a1.x, y: a2.y - a1.y };
+  const s = { x: b2.x - b1.x, y: b2.y - b1.y };
+  const denom = r.x * s.y - r.y * s.x;
+  if (Math.abs(denom) < 1e-8) {
+    return null;
+  }
+
+  const qmp = { x: b1.x - a1.x, y: b1.y - a1.y };
+  const t = (qmp.x * s.y - qmp.y * s.x) / denom;
+  const u = (qmp.x * r.y - qmp.y * r.x) / denom;
+
+  if (t <= 0.001 || t >= 0.999 || u <= 0.001 || u >= 0.999) {
+    return null;
+  }
+
+  return { x: a1.x + t * r.x, y: a1.y + t * r.y };
+}
+
+function drawSegmentSlice(seg, center, halfLength, lineWidth) {
+  const dx = seg.b.x - seg.a.x;
+  const dy = seg.b.y - seg.a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    return;
+  }
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const x1 = center.x - ux * halfLength;
+  const y1 = center.y - uy * halfLength;
+  const x2 = center.x + ux * halfLength;
+  const y2 = center.y + uy * halfLength;
+
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  applyTrackLineStyle(seg);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function drawLevelCrossingHints() {
+  if (state.tracks.length < 2) {
+    return;
+  }
+
+  const trackWorldWidth = getTrackWorldWidth();
+  const bridgeHalf = Math.max(trackWorldWidth * 1.08, 0.85);
+
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    for (let j = i + 1; j < state.tracks.length; j += 1) {
+      const segA = state.tracks[i];
+      const segB = state.tracks[j];
+      const lvA = normalizeTrackLevel(segA.level);
+      const lvB = normalizeTrackLevel(segB.level);
+      if (lvA === lvB) {
+        continue;
+      }
+
+      const p = segmentIntersectionPoint(segA.a, segA.b, segB.a, segB.b);
+      if (!p) {
+        continue;
+      }
+
+      const upper = lvA > lvB ? segA : segB;
+
+      ctx.fillStyle = PAPER_COLOR;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, trackWorldWidth * 0.72, 0, Math.PI * 2);
+      ctx.fill();
+
+      drawSegmentSlice(upper, p, bridgeHalf, trackWorldWidth);
+    }
+  }
+
+  ctx.setLineDash([]);
+}
+
+function buildTrackSegment(start, end) {
+  return {
+    a: { x: start.x, y: start.y },
+    b: { x: end.x, y: end.y },
+    level: normalizeTrackLevel(state.settings.trackLevel),
+    lineType: normalizeTrackLineType(state.settings.trackLineType),
+    color: normalizeTrackColor(state.settings.trackColor)
+  };
+}
+
+function getSelectedTrack() {
+  if (!state.selection || state.selection.type !== 'track') {
+    return null;
+  }
+  return state.tracks[state.selection.index] || null;
+}
+
+function syncTrackControlInputs() {
+  const selectedTrack = getSelectedTrack();
+  const level = selectedTrack ? normalizeTrackLevel(selectedTrack.level) : normalizeTrackLevel(state.settings.trackLevel);
+  const lineType = selectedTrack ? normalizeTrackLineType(selectedTrack.lineType) : normalizeTrackLineType(state.settings.trackLineType);
+  const color = selectedTrack ? normalizeTrackColor(selectedTrack.color) : normalizeTrackColor(state.settings.trackColor);
+
+  if (trackLevelInput) {
+    trackLevelInput.value = String(level);
+  }
+  if (trackLineTypeSelect) {
+    trackLineTypeSelect.value = lineType;
+  }
+  if (trackColorInput) {
+    trackColorInput.value = color;
+  }
+}
+
+function applyTrackSettingsToSelection() {
+  const seg = getSelectedTrack();
+  if (!seg) {
+    return false;
+  }
+  seg.level = normalizeTrackLevel(state.settings.trackLevel);
+  seg.lineType = normalizeTrackLineType(state.settings.trackLineType);
+  seg.color = normalizeTrackColor(state.settings.trackColor);
+  return true;
+}
+
+function getPlatformSegments() {
+  return state.platforms.filter((p) => p && p.a && p.b);
+}
+
+function polygonArea(points) {
+  let sum = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return sum / 2;
+}
+
+function buildPlatformFillPolygons(segments) {
+  if (segments.length < 3) {
+    return [];
+  }
+
+  const nodePoints = new Map();
+  const adj = new Map();
+
+  const addNeighbor = (from, to) => {
+    if (!adj.has(from)) {
+      adj.set(from, []);
+    }
+    adj.get(from).push(to);
+  };
+
+  for (const seg of segments) {
+    const ka = endpointKey(seg.a);
+    const kb = endpointKey(seg.b);
+    nodePoints.set(ka, seg.a);
+    nodePoints.set(kb, seg.b);
+    addNeighbor(ka, kb);
+    addNeighbor(kb, ka);
+  }
+
+  const degree2Nodes = Array.from(adj.keys()).filter((k) => (adj.get(k) || []).length === 2);
+  const visited = new Set();
+  const polygons = [];
+
+  for (const start of degree2Nodes) {
+    if (visited.has(start)) {
+      continue;
+    }
+
+    let prev = null;
+    let curr = start;
+    const path = [];
+    const seen = new Set();
+    let closed = false;
+
+    for (let guard = 0; guard < degree2Nodes.length + 2; guard += 1) {
+      path.push(curr);
+      seen.add(curr);
+
+      const neighbors = adj.get(curr) || [];
+      if (neighbors.length !== 2) {
+        break;
+      }
+
+      const next = neighbors[0] === prev ? neighbors[1] : neighbors[0];
+      prev = curr;
+      curr = next;
+
+      if (curr === start) {
+        closed = path.length >= 3;
+        break;
+      }
+      if (seen.has(curr)) {
+        break;
+      }
+    }
+
+    for (const key of path) {
+      visited.add(key);
+    }
+
+    if (!closed) {
+      continue;
+    }
+
+    const points = path.map((k) => nodePoints.get(k));
+    if (points.length < 3) {
+      continue;
+    }
+
+    const area = Math.abs(polygonArea(points));
+    if (area < 0.4) {
+      continue;
+    }
+
+    polygons.push(points);
+  }
+
+  return polygons;
+}
+
 function drawGrid() {
-  const grid = state.settings.gridSize;
+  const baseStep = state.settings.gridSize;
   const majorEvery = 5;
 
-  // Keep grid line density bounded so pan/zoom stays responsive.
-  const minMinorGapPx = 14;
-  let minorStep = grid;
-  const pxPerGrid = grid * state.view.zoom;
-  if (pxPerGrid > 0 && pxPerGrid < minMinorGapPx) {
-    minorStep = grid * Math.ceil(minMinorGapPx / pxPerGrid);
+  // Keep dot spacing in a readable range across zoom levels.
+  const minGapPx = 11;
+  let minorStep = baseStep;
+  while (minorStep * state.view.zoom < minGapPx) {
+    minorStep *= 2;
   }
   const majorStep = minorStep * majorEvery;
 
@@ -329,36 +614,36 @@ function drawGrid() {
   const startX = Math.floor(worldMinX / minorStep) * minorStep;
   const startY = Math.floor(worldMinY / minorStep) * minorStep;
 
-  // Minor grid lines (square graph paper feel).
-  ctx.strokeStyle = 'rgba(186, 186, 186, 0.55)';
-  ctx.lineWidth = 0.02;
+  // Keep dot size stable in screen space so dots do not vanish when zoomed out.
+  const minorRadiusPx = 0.95;
+  const majorRadiusPx = 1.35;
+  const minorRadius = minorRadiusPx / Math.max(0.0001, state.view.zoom);
+  const majorRadius = majorRadiusPx / Math.max(0.0001, state.view.zoom);
+  const majorStartX = Math.floor(worldMinX / majorStep) * majorStep;
+  const majorStartY = Math.floor(worldMinY / majorStep) * majorStep;
+
+  ctx.fillStyle = 'rgba(148, 148, 148, 0.74)';
   for (let x = startX; x <= worldMaxX + minorStep; x += minorStep) {
-    ctx.beginPath();
-    ctx.moveTo(x, worldMinY);
-    ctx.lineTo(x, worldMaxY);
-    ctx.stroke();
-  }
-  for (let y = startY; y <= worldMaxY + minorStep; y += minorStep) {
-    ctx.beginPath();
-    ctx.moveTo(worldMinX, y);
-    ctx.lineTo(worldMaxX, y);
-    ctx.stroke();
+    for (let y = startY; y <= worldMaxY + minorStep; y += minorStep) {
+      const onMajorX = Math.abs((x / majorStep) - Math.round(x / majorStep)) < 0.0001;
+      const onMajorY = Math.abs((y / majorStep) - Math.round(y / majorStep)) < 0.0001;
+      if (onMajorX && onMajorY) {
+        continue;
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, minorRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
-  // Major grid lines every 5 cells.
-  ctx.strokeStyle = 'rgba(142, 142, 142, 0.72)';
-  ctx.lineWidth = 0.04;
-  for (let x = Math.floor(worldMinX / majorStep) * majorStep; x <= worldMaxX + majorStep; x += majorStep) {
-    ctx.beginPath();
-    ctx.moveTo(x, worldMinY);
-    ctx.lineTo(x, worldMaxY);
-    ctx.stroke();
-  }
-  for (let y = Math.floor(worldMinY / majorStep) * majorStep; y <= worldMaxY + majorStep; y += majorStep) {
-    ctx.beginPath();
-    ctx.moveTo(worldMinX, y);
-    ctx.lineTo(worldMaxX, y);
-    ctx.stroke();
+  // Stronger dots every 5 steps for orientation at long zoom distances.
+  ctx.fillStyle = 'rgba(108, 108, 108, 0.92)';
+  for (let x = majorStartX; x <= worldMaxX + majorStep; x += majorStep) {
+    for (let y = majorStartY; y <= worldMaxY + majorStep; y += majorStep) {
+      ctx.beginPath();
+      ctx.arc(x, y, majorRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
@@ -421,31 +706,70 @@ function drawRuler() {
   ctx.restore();
 }
 
+function drawTrackLengthOverlay() {
+  if (state.mode !== 'track' || !state.draftingTrackStart || !state.mousePreview) {
+    return;
+  }
+
+  const lengthDot = distance(state.draftingTrackStart, state.mousePreview);
+  const lengthCm = lengthDot * DOT_CM;
+  const lengthM = lengthCm / 100;
+  const minM = state.settings.minTrackLength;
+  const enough = lengthDot >= state.settings.minTrackLength;
+  const label = `${lengthM.toFixed(2)} m / ${Math.round(lengthCm)} cm`;
+
+  const screen = worldToScreen(state.mousePreview);
+  let x = screen.x + 14;
+  let y = screen.y - 14;
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.font = '12px "Yu Gothic UI"';
+
+  const padX = 8;
+  const boxH = 24;
+  const textW = ctx.measureText(label).width;
+  const boxW = textW + padX * 2;
+
+  x = clamp(x, 6, canvas.width - boxW - 6);
+  y = clamp(y, 28, canvas.height - boxH - 6);
+
+  ctx.fillStyle = enough ? 'rgba(17, 24, 39, 0.86)' : 'rgba(127, 29, 29, 0.9)';
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.strokeStyle = enough ? 'rgba(56, 189, 248, 0.88)' : 'rgba(252, 165, 165, 0.92)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, y + 0.5, boxW - 1, boxH - 1);
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillText(label, x + padX, y + 16);
+
+  // Show the minimum target for easier snapping to required length.
+  ctx.fillStyle = enough ? 'rgba(191, 219, 254, 0.9)' : 'rgba(254, 202, 202, 0.95)';
+  ctx.font = '10px "Yu Gothic UI"';
+  ctx.fillText(`min ${minM.toFixed(1)} m`, x + padX, y - 4);
+  ctx.restore();
+}
+
 function drawTracks() {
-  const baseScreenWidth = state.settings.trackWidth * state.view.zoom;
-  const trackScreenWidth = Math.max(baseScreenWidth, 2.8);
-  const trackWorldWidth = trackScreenWidth / state.view.zoom;
-  const centerScreenWidth = clamp(trackScreenWidth * 0.24, 1.4, 3.6);
-  const centerWorldWidth = centerScreenWidth / state.view.zoom;
-  const previewScreenWidth = Math.max(trackScreenWidth * 0.72, 1.8);
-  const previewWorldWidth = previewScreenWidth / state.view.zoom;
+  const trackWorldWidth = getTrackWorldWidth();
   const nodeCounts = collectTrackNodeCounts();
 
-  ctx.strokeStyle = '#25698a';
   ctx.lineWidth = trackWorldWidth;
   ctx.lineCap = 'butt';
   ctx.lineJoin = 'round';
   for (const seg of state.tracks) {
+    applyTrackLineStyle(seg);
     ctx.beginPath();
     ctx.moveTo(seg.a.x, seg.a.y);
     ctx.lineTo(seg.b.x, seg.b.y);
     ctx.stroke();
   }
+  ctx.setLineDash([]);
 
   // Keep rounded appearance at branch/connection nodes only.
-  ctx.fillStyle = '#25698a';
   const joinRadius = trackWorldWidth * 0.51;
   for (const seg of state.tracks) {
+    ctx.fillStyle = normalizeTrackColor(seg.color);
     const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
     const bCount = nodeCounts.get(endpointKey(seg.b)) || 0;
     if (aCount >= 2) {
@@ -460,59 +784,42 @@ function drawTracks() {
     }
   }
 
-  // Track centerline for clearer alignment. Draw on top so joins stay visible.
-  ctx.strokeStyle = 'rgba(233, 248, 255, 0.98)';
-  ctx.lineWidth = centerWorldWidth;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (const seg of state.tracks) {
-    ctx.beginPath();
-    ctx.moveTo(seg.a.x, seg.a.y);
-    ctx.lineTo(seg.b.x, seg.b.y);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = 'rgba(233, 248, 255, 0.98)';
-  const centerJoinRadius = Math.max(centerWorldWidth * 0.92, 0.9 / state.view.zoom);
-  for (const seg of state.tracks) {
-    const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
-    const bCount = nodeCounts.get(endpointKey(seg.b)) || 0;
-    if (aCount >= 2) {
-      ctx.beginPath();
-      ctx.arc(seg.a.x, seg.a.y, centerJoinRadius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (bCount >= 2) {
-      ctx.beginPath();
-      ctx.arc(seg.b.x, seg.b.y, centerJoinRadius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
+  drawLevelCrossingHints();
 
   if (state.mode === 'track' && state.draftingTrackStart) {
-    ctx.strokeStyle = 'rgba(37, 105, 138, 0.55)';
-    ctx.setLineDash([0.8, 0.6]);
-    ctx.lineWidth = previewWorldWidth;
+    const previewEnd = state.mousePreview?.x !== undefined
+      ? state.mousePreview
+      : state.draftingTrackStart;
+    const previewSeg = {
+      a: state.draftingTrackStart,
+      b: previewEnd,
+      lineType: state.settings.trackLineType,
+      color: state.settings.trackColor
+    };
+
+    ctx.lineWidth = trackWorldWidth;
     ctx.lineCap = 'butt';
+    ctx.lineJoin = 'round';
+    applyTrackLineStyle(previewSeg);
     ctx.beginPath();
     ctx.moveTo(state.draftingTrackStart.x, state.draftingTrackStart.y);
-    ctx.lineTo(
-      state.mousePreview?.x ?? state.draftingTrackStart.x,
-      state.mousePreview?.y ?? state.draftingTrackStart.y
-    );
+    ctx.lineTo(previewEnd.x, previewEnd.y);
     ctx.stroke();
+
     ctx.setLineDash([]);
   }
 
   if (state.mode === 'track' && state.mousePreview) {
     const p = state.mousePreview;
     const hasStart = Boolean(state.draftingTrackStart);
-    const ringRadius = hasStart ? 1.5 : 1.9;
+    const ringLineWidth = clamp(1.6 / state.view.zoom, 0.14, 0.5);
+    // Match cursor ring outer edge to clearance: 300cm total => 150cm radius (= 3 dots).
+    const ringRadius = Math.max(0.05, CLEARANCE_HALF_WIDTH_DOT - ringLineWidth / 2);
     const innerRadius = hasStart ? 0.28 : 0.34;
 
     // Cursor-following pick marker for the next click position.
     ctx.strokeStyle = hasStart ? 'rgba(22, 138, 206, 0.95)' : 'rgba(23, 116, 182, 0.95)';
-    ctx.lineWidth = clamp(1.6 / state.view.zoom, 0.14, 0.5);
+    ctx.lineWidth = ringLineWidth;
     ctx.beginPath();
     ctx.arc(p.x, p.y, ringRadius, 0, Math.PI * 2);
     ctx.stroke();
@@ -526,7 +833,7 @@ function drawTracks() {
   if (state.selection && state.selection.type === 'track') {
     const seg = state.tracks[state.selection.index];
     if (seg) {
-      const selectedWorldWidth = (trackScreenWidth + 1.8) / state.view.zoom;
+      const selectedWorldWidth = (Math.max(state.settings.trackWidth * state.view.zoom, 2.8) + 1.8) / state.view.zoom;
       ctx.strokeStyle = 'rgba(10, 130, 220, 0.95)';
       ctx.lineWidth = selectedWorldWidth;
       ctx.lineCap = 'butt';
@@ -578,31 +885,66 @@ function drawTrackClearance() {
 }
 
 function drawPlatforms() {
+  const platformWorldWidth = Math.max(PLATFORM_WIDTH_DOT, 1.4 / Math.max(0.0001, state.view.zoom));
+  const platformSegments = getPlatformSegments();
+  const platformPolygons = buildPlatformFillPolygons(platformSegments);
+
+  // Fill enclosed platform areas when segment loops form a polygon.
+  ctx.fillStyle = 'rgba(138, 138, 138, 0.34)';
+  for (const poly of platformPolygons) {
+    ctx.beginPath();
+    ctx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i += 1) {
+      ctx.lineTo(poly[i].x, poly[i].y);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
   for (const p of state.platforms) {
+    if (p.a && p.b) {
+      ctx.strokeStyle = '#8a8a8a';
+      ctx.lineWidth = platformWorldWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(p.a.x, p.a.y);
+      ctx.lineTo(p.b.x, p.b.y);
+      ctx.stroke();
+      continue;
+    }
+
+    // Legacy rectangular platform compatibility.
     ctx.fillStyle = '#8a8a8a';
     ctx.fillRect(p.x, p.y, p.w, p.h);
   }
 
   if (state.mode === 'platform' && state.draftingPlatformStart && state.draftingPlatformCurrent) {
-    const x = Math.min(state.draftingPlatformStart.x, state.draftingPlatformCurrent.x);
-    const y = Math.min(state.draftingPlatformStart.y, state.draftingPlatformCurrent.y);
-    const w = Math.abs(state.draftingPlatformStart.x - state.draftingPlatformCurrent.x);
-    const h = Math.abs(state.draftingPlatformStart.y - state.draftingPlatformCurrent.y);
-
-    ctx.fillStyle = 'rgba(138, 138, 138, 0.45)';
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = '#666';
-    ctx.lineWidth = 0.14;
-    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(138, 138, 138, 0.75)';
+    ctx.lineWidth = platformWorldWidth;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([0.3, 0.25]);
+    ctx.beginPath();
+    ctx.moveTo(state.draftingPlatformStart.x, state.draftingPlatformStart.y);
+    ctx.lineTo(state.draftingPlatformCurrent.x, state.draftingPlatformCurrent.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   if (state.selection && state.selection.type === 'platform') {
     const p = state.platforms[state.selection.index];
     if (p) {
       ctx.strokeStyle = 'rgba(10, 130, 220, 0.95)';
-      ctx.lineWidth = 0.24;
+      ctx.lineWidth = Math.max(platformWorldWidth + 0.24, 0.24);
       ctx.setLineDash([0.6, 0.4]);
-      ctx.strokeRect(p.x, p.y, p.w, p.h);
+      if (p.a && p.b) {
+        ctx.beginPath();
+        ctx.moveTo(p.a.x, p.a.y);
+        ctx.lineTo(p.b.x, p.b.y);
+        ctx.stroke();
+      } else {
+        ctx.strokeRect(p.x, p.y, p.w, p.h);
+      }
       ctx.setLineDash([]);
     }
   }
@@ -661,7 +1003,8 @@ function drawTrains() {
 
 function render() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = PAPER_COLOR;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.setTransform(state.view.zoom, 0, 0, state.view.zoom, state.view.offsetX, state.view.offsetY);
   if (state.layers.grid) {
@@ -680,8 +1023,20 @@ function render() {
     drawTrains();
   }
   ctx.restore();
-  if (state.layers.ruler && !state.view.panning) {
-    drawRuler();
+  drawTrackLengthOverlay();
+  syncTrackControlInputs();
+  updateStatusBar();
+}
+
+function updateStatusBar() {
+  if (zoomStat) {
+    const relativeZoom = ((state.view.zoom / ZOOM_BASELINE) - 1) * 100;
+    const rounded = Math.round(relativeZoom);
+    const sign = rounded > 0 ? '+' : '';
+    zoomStat.textContent = `${sign}${rounded}%`;
+  }
+  if (countStat) {
+    countStat.textContent = `T${state.tracks.length} P${state.platforms.length} R${state.trains.length}`;
   }
 }
 
@@ -697,6 +1052,15 @@ function eraseAt(point) {
 
   for (let i = state.platforms.length - 1; i >= 0; i -= 1) {
     const p = state.platforms[i];
+    if (p.a && p.b) {
+      const pr = nearestPointOnSegment(point, p.a, p.b);
+      if (pr.dist < PLATFORM_WIDTH_DOT * 0.7) {
+        state.platforms.splice(i, 1);
+        return true;
+      }
+      continue;
+    }
+
     if (point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h) {
       state.platforms.splice(i, 1);
       return true;
@@ -726,6 +1090,14 @@ function pickEntityAt(point) {
 
   for (let i = state.platforms.length - 1; i >= 0; i -= 1) {
     const p = state.platforms[i];
+    if (p.a && p.b) {
+      const pr = nearestPointOnSegment(point, p.a, p.b);
+      if (pr.dist < PLATFORM_WIDTH_DOT * 0.8) {
+        return { type: 'platform', index: i };
+      }
+      continue;
+    }
+
     if (point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h) {
       return { type: 'platform', index: i };
     }
@@ -764,8 +1136,15 @@ function moveSelectionBy(dx, dy) {
     if (!p) {
       return;
     }
-    p.x += dx;
-    p.y += dy;
+    if (p.a && p.b) {
+      p.a.x += dx;
+      p.a.y += dy;
+      p.b.x += dx;
+      p.b.y += dy;
+    } else {
+      p.x += dx;
+      p.y += dy;
+    }
     return;
   }
 
@@ -859,7 +1238,9 @@ canvas.addEventListener('mousemove', (ev) => {
 
   const p = state.mode === 'track'
     ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
-    : quantizePoint(raw);
+    : state.mode === 'platform'
+      ? applyTrackConstraint(raw, state.draftingPlatformStart)
+      : quantizePoint(raw);
   state.mousePreview = p;
   if (state.mode === 'platform' && state.draftingPlatformStart) {
     state.draftingPlatformCurrent = p;
@@ -898,14 +1279,16 @@ canvas.addEventListener('mousedown', (ev) => {
 
   const p = state.mode === 'track'
     ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
-    : quantizePoint(raw);
+    : state.mode === 'platform'
+      ? applyTrackConstraint(raw, state.draftingPlatformStart)
+      : quantizePoint(raw);
 
   if (state.mode === 'track') {
     if (!state.draftingTrackStart) {
       state.draftingTrackStart = p;
     } else {
       if (distance(state.draftingTrackStart, p) >= state.settings.minTrackLength) {
-        state.tracks.push({ a: state.draftingTrackStart, b: p });
+        state.tracks.push(buildTrackSegment(state.draftingTrackStart, p));
         commitHistory();
       }
       state.draftingTrackStart = null;
@@ -915,8 +1298,21 @@ canvas.addEventListener('mousedown', (ev) => {
   }
 
   if (state.mode === 'platform') {
-    state.draftingPlatformStart = p;
-    state.draftingPlatformCurrent = p;
+    if (!state.draftingPlatformStart) {
+      state.draftingPlatformStart = p;
+      state.draftingPlatformCurrent = p;
+    } else {
+      if (distance(state.draftingPlatformStart, p) >= PLATFORM_MIN_LENGTH_DOT) {
+        state.platforms.push({
+          a: { x: state.draftingPlatformStart.x, y: state.draftingPlatformStart.y },
+          b: { x: p.x, y: p.y }
+        });
+        commitHistory();
+      }
+      // Continue drawing from the last endpoint for chained platform segments.
+      state.draftingPlatformStart = p;
+      state.draftingPlatformCurrent = p;
+    }
     render();
     return;
   }
@@ -977,23 +1373,7 @@ canvas.addEventListener('mouseup', () => {
     return;
   }
 
-  if (state.mode !== 'platform' || !state.draftingPlatformStart || !state.draftingPlatformCurrent) {
-    return;
-  }
-
-  const x = Math.min(state.draftingPlatformStart.x, state.draftingPlatformCurrent.x);
-  const y = Math.min(state.draftingPlatformStart.y, state.draftingPlatformCurrent.y);
-  const w = Math.abs(state.draftingPlatformStart.x - state.draftingPlatformCurrent.x);
-  const h = Math.abs(state.draftingPlatformStart.y - state.draftingPlatformCurrent.y);
-
-  if (w > 1 && h > 1) {
-    state.platforms.push({ x, y, w, h });
-    commitHistory();
-  }
-
-  state.draftingPlatformStart = null;
-  state.draftingPlatformCurrent = null;
-  render();
+  // Platform is now click-to-draw; no mouseup finalize action is needed.
 });
 
 clearBtn.addEventListener('click', () => {
@@ -1053,6 +1433,7 @@ function refreshSettingLabels() {
   trackWidthLabel.textContent = `${Math.round(state.settings.trackWidth)}m`;
   const cm = Math.round(state.settings.minTrackLength * DOT_CM);
   minTrackLenLabel.textContent = `${state.settings.minTrackLength.toFixed(1)}m (${cm}cm)`;
+  syncTrackControlInputs();
 }
 
 gridSizeSelect.addEventListener('change', () => {
@@ -1074,6 +1455,42 @@ trackWidthRange.addEventListener('input', () => {
   state.settings.trackWidth = Number(trackWidthRange.value);
   refreshSettingLabels();
   render();
+});
+
+trackLevelInput.addEventListener('input', () => {
+  state.settings.trackLevel = normalizeTrackLevel(trackLevelInput.value);
+  if (applyTrackSettingsToSelection()) {
+    render();
+  }
+});
+
+trackLevelInput.addEventListener('change', () => {
+  if (applyTrackSettingsToSelection()) {
+    commitHistory();
+    render();
+  }
+});
+
+trackLineTypeSelect.addEventListener('change', () => {
+  state.settings.trackLineType = normalizeTrackLineType(trackLineTypeSelect.value);
+  if (applyTrackSettingsToSelection()) {
+    commitHistory();
+  }
+  render();
+});
+
+trackColorInput.addEventListener('input', () => {
+  state.settings.trackColor = normalizeTrackColor(trackColorInput.value);
+  if (applyTrackSettingsToSelection()) {
+    render();
+  }
+});
+
+trackColorInput.addEventListener('change', () => {
+  if (applyTrackSettingsToSelection()) {
+    commitHistory();
+    render();
+  }
 });
 
 minTrackLenRange.addEventListener('input', () => {

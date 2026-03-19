@@ -8,17 +8,36 @@
   </head>
   <body>
     <header class="toolbar">
-      <h1>Rail Draft Prototype</h1>
-      <div class="tools">
-        <button data-mode="select" class="tool">Select</button>
-        <button data-mode="track" class="tool active">Track</button>
-        <button data-mode="platform" class="tool">Platform</button>
-        <button data-mode="train" class="tool">Train</button>
-        <button data-mode="car" class="tool">Add Car</button>
-        <button data-mode="erase" class="tool">Erase</button>
-        <button id="layerMenuBtn" class="tool">Layers</button>
-        <button id="clearBtn" class="tool ghost">Clear</button>
+      <div class="toolbar-head">
+        <div class="brand">
+          <h1>配線略図エディタ</h1>
+          <p class="subhead">TransitNexus prototype</p>
+        </div>
+        <div class="head-right">
+          <nav class="head-links" aria-label="Header Actions">
+            <button type="button" class="link-like">Language</button>
+            <button type="button" class="link-like">お知らせ</button>
+            <button type="button" class="link-like">ログイン</button>
+          </nav>
+          <div class="status-chips">
+            <span id="zoomStat" class="chip">500%</span>
+            <span id="countStat" class="chip">T0 P0 R0</span>
+          </div>
+        </div>
       </div>
+
+      <div class="tools">
+        <button data-mode="select" class="tool" title="Select">SEL</button>
+        <button data-mode="track" class="tool active" title="Track">TRK</button>
+        <button data-mode="platform" class="tool" title="Platform">PLT</button>
+        <button data-mode="train" class="tool" title="Train">TRN</button>
+        <button data-mode="car" class="tool" title="Add Car">CAR</button>
+        <button data-mode="erase" class="tool" title="Erase">DEL</button>
+        <span class="tool-sep" aria-hidden="true"></span>
+        <button id="layerMenuBtn" class="tool" title="Layers">LAY</button>
+        <button id="clearBtn" class="tool ghost" title="Clear">CLR</button>
+      </div>
+
       <section id="layerPanel" class="layer-panel" aria-label="Display Layers" hidden>
         <label><input id="layerGrid" type="checkbox" checked /> Grid</label>
         <label><input id="layerTrack" type="checkbox" checked /> Track</label>
@@ -27,7 +46,9 @@
         <label><input id="layerTrain" type="checkbox" checked /> Train</label>
         <label><input id="layerRuler" type="checkbox" checked /> Ruler</label>
       </section>
+
       <p id="hint">Track: 始点をクリックして終点をクリック</p>
+
       <section class="track-settings" aria-label="Track Laying Settings">
         <label>
           Grid Pitch
@@ -49,6 +70,22 @@
           Track Width
           <input id="trackWidthRange" type="range" min="1" max="8" step="1" value="2" />
           <span id="trackWidthLabel">2m</span>
+        </label>
+        <label>
+          Level
+          <input id="trackLevelInput" type="number" min="-9" max="9" step="1" value="0" />
+        </label>
+        <label>
+          Line Type
+          <select id="trackLineTypeSelect">
+            <option value="solid" selected>Solid</option>
+            <option value="dashed">Dashed</option>
+            <option value="dotted">Dotted</option>
+          </select>
+        </label>
+        <label>
+          Line Color
+          <input id="trackColorInput" type="color" value="#25698a" />
         </label>
         <label>
           Min Length
