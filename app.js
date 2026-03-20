@@ -2,6 +2,10 @@ const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const hint = document.getElementById('hint');
 const clearBtn = document.getElementById('clearBtn');
+const quickSaveBtn = document.getElementById('quickSaveBtn');
+const saveBtn = document.getElementById('saveBtn');
+const loadBtn = document.getElementById('loadBtn');
+const loadFileInput = document.getElementById('loadFileInput');
 const layerMenuBtn = document.getElementById('layerMenuBtn');
 const layerPanel = document.getElementById('layerPanel');
 const layerGrid = document.getElementById('layerGrid');
@@ -28,8 +32,10 @@ const DOT_CM = 50; // 1 grid cell = 50cm
 const CLEARANCE_HALF_WIDTH_DOT = 3; // 1500mm each side (3000mm total)
 const PAPER_COLOR = '#ffffff';
 const ZOOM_BASELINE = 13.9; // Treat 1390% as 0% in status display.
-const PLATFORM_WIDTH_DOT = 1.4;
+const PLATFORM_WIDTH_DOT = 0.9;
 const PLATFORM_MIN_LENGTH_DOT = 0.6;
+const TRACK_BODY_ALPHA = 0.78;
+const QUICK_SAVE_KEY = 'transitnexus.quickSave.v1';
 const TRAIN_DIM = {
   carLengthDot: 20,
   carHeightDot: 2.8,
@@ -127,6 +133,149 @@ function applySnapshot(snap) {
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
   render();
+}
+
+function buildSerializableState() {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    tracks: clone(state.tracks),
+    platforms: clone(state.platforms),
+    trains: clone(state.trains),
+    settings: {
+      gridSize: state.settings.gridSize,
+      snap: state.settings.snap,
+      ortho: state.settings.ortho,
+      trackWidth: state.settings.trackWidth,
+      trackLevel: state.settings.trackLevel,
+      trackLineType: state.settings.trackLineType,
+      trackColor: state.settings.trackColor,
+      minTrackLength: state.settings.minTrackLength
+    },
+    view: {
+      zoom: state.view.zoom,
+      offsetX: state.view.offsetX,
+      offsetY: state.view.offsetY
+    }
+  };
+}
+
+function sanitizeLoadedState(raw) {
+  const safe = raw && typeof raw === 'object' ? raw : {};
+  return {
+    tracks: Array.isArray(safe.tracks) ? safe.tracks : [],
+    platforms: Array.isArray(safe.platforms) ? safe.platforms : [],
+    trains: Array.isArray(safe.trains) ? safe.trains : [],
+    settings: {
+      gridSize: Number(safe.settings?.gridSize) || state.settings.gridSize,
+      snap: typeof safe.settings?.snap === 'boolean' ? safe.settings.snap : state.settings.snap,
+      ortho: typeof safe.settings?.ortho === 'boolean' ? safe.settings.ortho : state.settings.ortho,
+      trackWidth: Number(safe.settings?.trackWidth) || state.settings.trackWidth,
+      trackLevel: normalizeTrackLevel(safe.settings?.trackLevel),
+      trackLineType: normalizeTrackLineType(safe.settings?.trackLineType),
+      trackColor: normalizeTrackColor(safe.settings?.trackColor),
+      minTrackLength: Number(safe.settings?.minTrackLength) || state.settings.minTrackLength
+    },
+    view: {
+      zoom: clamp(Number(safe.view?.zoom) || state.view.zoom, state.view.minZoom, state.view.maxZoom),
+      offsetX: Number(safe.view?.offsetX),
+      offsetY: Number(safe.view?.offsetY)
+    }
+  };
+}
+
+function applyLoadedState(data) {
+  const next = sanitizeLoadedState(data);
+
+  state.tracks = clone(next.tracks);
+  state.platforms = clone(next.platforms);
+  state.trains = clone(next.trains);
+
+  state.settings.gridSize = clamp(next.settings.gridSize, 1, 5);
+  state.settings.snap = next.settings.snap;
+  state.settings.ortho = next.settings.ortho;
+  state.settings.trackWidth = clamp(next.settings.trackWidth, 1, 8);
+  state.settings.trackLevel = next.settings.trackLevel;
+  state.settings.trackLineType = next.settings.trackLineType;
+  state.settings.trackColor = next.settings.trackColor;
+  state.settings.minTrackLength = clamp(next.settings.minTrackLength, 1, 20);
+
+  state.view.zoom = next.view.zoom;
+  if (Number.isFinite(next.view.offsetX) && Number.isFinite(next.view.offsetY)) {
+    state.view.offsetX = next.view.offsetX;
+    state.view.offsetY = next.view.offsetY;
+  }
+
+  state.selection = null;
+  state.draggingSelection = false;
+  state.selectionMoved = false;
+  state.lastDragWorld = null;
+  state.mousePreview = null;
+  state.draftingTrackStart = null;
+  state.draftingPlatformStart = null;
+  state.draftingPlatformCurrent = null;
+
+  gridSizeSelect.value = String(state.settings.gridSize);
+  snapToggle.checked = state.settings.snap;
+  orthoToggle.checked = state.settings.ortho;
+  trackWidthRange.value = String(Math.round(state.settings.trackWidth));
+  minTrackLenRange.value = String(state.settings.minTrackLength);
+
+  refreshSettingLabels();
+  commitHistory();
+  render();
+}
+
+function saveDiagramToFile() {
+  const payload = buildSerializableState();
+  const text = JSON.stringify(payload, null, 2);
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  a.href = url;
+  a.download = `transitnexus-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function quickSaveToLocal() {
+  const payload = buildSerializableState();
+  localStorage.setItem(QUICK_SAVE_KEY, JSON.stringify(payload));
+}
+
+function restoreQuickSaveFromLocal() {
+  const text = localStorage.getItem(QUICK_SAVE_KEY);
+  if (!text) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    applyLoadedState(parsed);
+    return true;
+  } catch (_err) {
+    localStorage.removeItem(QUICK_SAVE_KEY);
+    return false;
+  }
+}
+
+function loadDiagramFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result || '{}'));
+      applyLoadedState(parsed);
+    } catch (_err) {
+      alert('読み込みに失敗しました。JSONファイルを確認してください。');
+    }
+  };
+  reader.onerror = () => {
+    alert('ファイルの読み込みに失敗しました。');
+  };
+  reader.readAsText(file, 'utf-8');
 }
 
 function commitHistory() {
@@ -406,11 +555,13 @@ function drawSegmentSlice(seg, center, halfLength, lineWidth) {
 
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
+  ctx.globalAlpha = TRACK_BODY_ALPHA;
   applyTrackLineStyle(seg);
   ctx.beginPath();
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
   ctx.stroke();
+  ctx.globalAlpha = 1;
 }
 
 function drawLevelCrossingHints() {
@@ -757,6 +908,7 @@ function drawTracks() {
   ctx.lineWidth = trackWorldWidth;
   ctx.lineCap = 'butt';
   ctx.lineJoin = 'round';
+  ctx.globalAlpha = TRACK_BODY_ALPHA;
   for (const seg of state.tracks) {
     applyTrackLineStyle(seg);
     ctx.beginPath();
@@ -765,9 +917,11 @@ function drawTracks() {
     ctx.stroke();
   }
   ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
 
   // Keep rounded appearance at branch/connection nodes only.
   const joinRadius = trackWorldWidth * 0.51;
+  ctx.globalAlpha = TRACK_BODY_ALPHA;
   for (const seg of state.tracks) {
     ctx.fillStyle = normalizeTrackColor(seg.color);
     const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
@@ -783,6 +937,7 @@ function drawTracks() {
       ctx.fill();
     }
   }
+  ctx.globalAlpha = 1;
 
   drawLevelCrossingHints();
 
@@ -885,7 +1040,7 @@ function drawTrackClearance() {
 }
 
 function drawPlatforms() {
-  const platformWorldWidth = Math.max(PLATFORM_WIDTH_DOT, 1.4 / Math.max(0.0001, state.view.zoom));
+  const platformWorldWidth = Math.max(PLATFORM_WIDTH_DOT, 1.0 / Math.max(0.0001, state.view.zoom));
   const platformSegments = getPlatformSegments();
   const platformPolygons = buildPlatformFillPolygons(platformSegments);
 
@@ -1390,6 +1545,26 @@ clearBtn.addEventListener('click', () => {
   render();
 });
 
+quickSaveBtn.addEventListener('click', () => {
+  quickSaveToLocal();
+});
+
+saveBtn.addEventListener('click', () => {
+  saveDiagramToFile();
+});
+
+loadBtn.addEventListener('click', () => {
+  loadFileInput.click();
+});
+
+loadFileInput.addEventListener('change', () => {
+  const file = loadFileInput.files && loadFileInput.files[0];
+  if (file) {
+    loadDiagramFromFile(file);
+  }
+  loadFileInput.value = '';
+});
+
 layerMenuBtn.addEventListener('click', () => {
   layerPanel.hidden = !layerPanel.hidden;
   layerMenuBtn.classList.toggle('active', !layerPanel.hidden);
@@ -1509,6 +1684,12 @@ window.addEventListener('keydown', (ev) => {
   }
 
   if (mod && !ev.altKey && (key === 'y' || (key === 'z' && ev.shiftKey))) {
+      if (mod && !ev.altKey && key === 's') {
+        ev.preventDefault();
+        quickSaveToLocal();
+        return;
+      }
+
     ev.preventDefault();
     redo();
     return;
@@ -1542,4 +1723,6 @@ state.view.offsetX = canvas.width * 0.05;
 state.view.offsetY = canvas.height * 0.62;
 commitHistory();
 refreshSettingLabels();
-render();
+if (!restoreQuickSaveFromLocal()) {
+  render();
+}

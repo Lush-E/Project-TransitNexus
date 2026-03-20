@@ -35,6 +35,9 @@
         <button data-mode="erase" class="tool" title="Erase">DEL</button>
         <span class="tool-sep" aria-hidden="true"></span>
         <button id="layerMenuBtn" class="tool" title="Layers">LAY</button>
+        <button id="quickSaveBtn" class="tool" title="Quick Save">QSV</button>
+        <button id="saveBtn" class="tool" title="Save">SAV</button>
+        <button id="loadBtn" class="tool" title="Load">LOD</button>
         <button id="clearBtn" class="tool ghost" title="Clear">CLR</button>
       </div>
 
@@ -98,6 +101,8 @@
     <main class="stage-wrap">
       <canvas id="stage" width="1400" height="760"></canvas>
     </main>
+
+    <input id="loadFileInput" type="file" accept="application/json,.json" hidden />
 
     <script src="./app.js"></script>
   </body>
