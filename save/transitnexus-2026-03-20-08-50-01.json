@@ -1,0 +1,361 @@
+{
+  "version": 1,
+  "savedAt": "2026-03-20T08:50:01.912Z",
+  "tracks": [
+    {
+      "a": {
+        "x": 45,
+        "y": 10
+      },
+      "b": {
+        "x": 25,
+        "y": 10
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 45,
+        "y": 18
+      },
+      "b": {
+        "x": 25,
+        "y": 18
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 45,
+        "y": 10
+      },
+      "b": {
+        "x": 37,
+        "y": 18
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 38,
+        "y": 10
+      },
+      "b": {
+        "x": 45,
+        "y": 18
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 53,
+        "y": 2
+      },
+      "b": {
+        "x": 42,
+        "y": -9
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 42,
+        "y": -9
+      },
+      "b": {
+        "x": 31,
+        "y": -20
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 31,
+        "y": -20
+      },
+      "b": {
+        "x": 19,
+        "y": -20
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 53,
+        "y": 2
+      },
+      "b": {
+        "x": 45,
+        "y": 10
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 45,
+        "y": 18
+      },
+      "b": {
+        "x": 52,
+        "y": 26
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 52,
+        "y": 26
+      },
+      "b": {
+        "x": 30,
+        "y": 48
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 30,
+        "y": 48
+      },
+      "b": {
+        "x": 19,
+        "y": 48
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 36,
+        "y": 24
+      },
+      "b": {
+        "x": -664,
+        "y": 24
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 53,
+        "y": 2
+      },
+      "b": {
+        "x": 77,
+        "y": 2
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 88,
+        "y": 2
+      },
+      "b": {
+        "x": 95,
+        "y": 2
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 90,
+        "y": -6
+      },
+      "b": {
+        "x": 95,
+        "y": -6
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 88,
+        "y": 26
+      },
+      "b": {
+        "x": 95,
+        "y": 26
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 95,
+        "y": 34
+      },
+      "b": {
+        "x": 44,
+        "y": 34
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 78,
+        "y": 26
+      },
+      "b": {
+        "x": 87,
+        "y": 34
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 88,
+        "y": 26
+      },
+      "b": {
+        "x": 64,
+        "y": 2
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 88,
+        "y": 2
+      },
+      "b": {
+        "x": 64,
+        "y": 26
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 52,
+        "y": 26
+      },
+      "b": {
+        "x": 78,
+        "y": 26
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 95,
+        "y": 18
+      },
+      "b": {
+        "x": 72,
+        "y": 18
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 95,
+        "y": 10
+      },
+      "b": {
+        "x": 72,
+        "y": 10
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 77,
+        "y": 2
+      },
+      "b": {
+        "x": 85,
+        "y": -6
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 90,
+        "y": -6
+      },
+      "b": {
+        "x": 45,
+        "y": -6
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    },
+    {
+      "a": {
+        "x": 95,
+        "y": 2
+      },
+      "b": {
+        "x": 795,
+        "y": 3
+      },
+      "level": 0,
+      "lineType": "solid",
+      "color": "#25698a"
+    }
+  ],
+  "platforms": [],
+  "trains": [],
+  "settings": {
+    "gridSize": 1,
+    "snap": true,
+    "ortho": false,
+    "trackWidth": 2,
+    "trackLevel": 0,
+    "trackLineType": "solid",
+    "trackColor": "#25698a",
+    "minTrackLength": 3
+  },
+  "view": {
+    "zoom": 1.7300506801520645,
+    "offsetX": 330.6841849333971,
+    "offsetY": 203.78733531210972
+  }
+}
