@@ -28,7 +28,7 @@ const minTrackLenRange = document.getElementById('minTrackLenRange');
 const minTrackLenLabel = document.getElementById('minTrackLenLabel');
 
 const UNIT_LABEL = 'u';
-const CLEARANCE_HALF_WIDTH_DOT = 3; // 3 units each side
+const CLEARANCE_HALF_WIDTH_DOT = 2; // 2 units each side
 const PAPER_COLOR = '#ffffff';
 const ZOOM_BASELINE = 13.9; // Treat 1390% as 0% in status display.
 const PLATFORM_WIDTH_DOT = 0.9;
