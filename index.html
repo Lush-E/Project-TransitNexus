@@ -47,7 +47,6 @@
         <label><input id="layerClearance" type="checkbox" checked /> Clearance</label>
         <label><input id="layerPlatform" type="checkbox" checked /> Platform</label>
         <label><input id="layerTrain" type="checkbox" checked /> Train</label>
-        <label><input id="layerRuler" type="checkbox" checked /> Ruler</label>
       </section>
 
       <p id="hint">Track: 始点をクリックして終点をクリック</p>
@@ -56,9 +55,9 @@
         <label>
           Grid Pitch
           <select id="gridSizeSelect">
-            <option value="1" selected>1 cell (0.5m)</option>
-            <option value="2">2 cell (1.0m)</option>
-            <option value="5">5 cell (2.5m)</option>
+            <option value="1" selected>1 cell</option>
+            <option value="2">2 cells</option>
+            <option value="5">5 cells</option>
           </select>
         </label>
         <label class="inline-check">
@@ -72,7 +71,7 @@
         <label>
           Track Width
           <input id="trackWidthRange" type="range" min="1" max="8" step="1" value="2" />
-          <span id="trackWidthLabel">2m</span>
+          <span id="trackWidthLabel">2u</span>
         </label>
         <label>
           Level
@@ -93,7 +92,7 @@
         <label>
           Min Length
           <input id="minTrackLenRange" type="range" min="1" max="20" step="0.5" value="3" />
-          <span id="minTrackLenLabel">3.0m</span>
+          <span id="minTrackLenLabel">3.0u</span>
         </label>
       </section>
     </header>

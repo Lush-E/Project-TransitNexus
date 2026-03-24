@@ -13,7 +13,6 @@ const layerTrack = document.getElementById('layerTrack');
 const layerClearance = document.getElementById('layerClearance');
 const layerPlatform = document.getElementById('layerPlatform');
 const layerTrain = document.getElementById('layerTrain');
-const layerRuler = document.getElementById('layerRuler');
 const modeButtons = Array.from(document.querySelectorAll('.tool[data-mode]'));
 const zoomStat = document.getElementById('zoomStat');
 const countStat = document.getElementById('countStat');
@@ -28,8 +27,8 @@ const trackColorInput = document.getElementById('trackColorInput');
 const minTrackLenRange = document.getElementById('minTrackLenRange');
 const minTrackLenLabel = document.getElementById('minTrackLenLabel');
 
-const DOT_CM = 50; // 1 grid cell = 50cm
-const CLEARANCE_HALF_WIDTH_DOT = 3; // 1500mm each side (3000mm total)
+const UNIT_LABEL = 'u';
+const CLEARANCE_HALF_WIDTH_DOT = 3; // 3 units each side
 const PAPER_COLOR = '#ffffff';
 const ZOOM_BASELINE = 13.9; // Treat 1390% as 0% in status display.
 const PLATFORM_WIDTH_DOT = 0.9;
@@ -83,8 +82,7 @@ const state = {
     track: true,
     clearance: true,
     platform: true,
-    train: true,
-    ruler: true
+    train: true
   },
   history: [],
   future: []
@@ -137,7 +135,8 @@ function applySnapshot(snap) {
 
 function buildSerializableState() {
   return {
-    version: 1,
+    version: 2,
+    unitSystem: UNIT_LABEL,
     savedAt: new Date().toISOString(),
     tracks: clone(state.tracks),
     platforms: clone(state.platforms),
@@ -162,6 +161,7 @@ function buildSerializableState() {
 
 function sanitizeLoadedState(raw) {
   const safe = raw && typeof raw === 'object' ? raw : {};
+  const loadedUnit = typeof safe.unitSystem === 'string' ? safe.unitSystem : UNIT_LABEL;
   return {
     tracks: Array.isArray(safe.tracks) ? safe.tracks : [],
     platforms: Array.isArray(safe.platforms) ? safe.platforms : [],
@@ -180,7 +180,8 @@ function sanitizeLoadedState(raw) {
       zoom: clamp(Number(safe.view?.zoom) || state.view.zoom, state.view.minZoom, state.view.maxZoom),
       offsetX: Number(safe.view?.offsetX),
       offsetY: Number(safe.view?.offsetY)
-    }
+    },
+    unitSystem: loadedUnit
   };
 }
 
@@ -798,76 +799,15 @@ function drawGrid() {
   }
 }
 
-function formatCmLabel(cm) {
-  if (Math.abs(cm) >= 100) {
-    return `${(cm / 100).toFixed(1)}m`;
-  }
-  return `${Math.round(cm)}cm`;
-}
-
-function drawRuler() {
-  const rulerHeight = 24;
-  const worldLeft = (-state.view.offsetX) / state.view.zoom;
-  const worldRight = (canvas.width - state.view.offsetX) / state.view.zoom;
-  const baseStep = state.settings.gridSize;
-
-  // Keep major ticks readable on screen regardless of zoom.
-  let labelStep = baseStep * 5;
-  while (labelStep * state.view.zoom < 58) {
-    labelStep *= 2;
-  }
-
-  const minorStep = labelStep / 5;
-
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-  ctx.fillStyle = 'rgba(244, 244, 244, 0.95)';
-  ctx.fillRect(0, 0, canvas.width, rulerHeight);
-  ctx.strokeStyle = 'rgba(138, 138, 138, 0.9)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, rulerHeight - 0.5);
-  ctx.lineTo(canvas.width, rulerHeight - 0.5);
-  ctx.stroke();
-
-  const firstTick = Math.floor(worldLeft / minorStep) * minorStep;
-  for (let wx = firstTick; wx <= worldRight + minorStep; wx += minorStep) {
-    const sx = wx * state.view.zoom + state.view.offsetX;
-    if (sx < -1 || sx > canvas.width + 1) {
-      continue;
-    }
-
-    const onMajor = Math.abs((wx / labelStep) - Math.round(wx / labelStep)) < 0.001;
-    const tickTop = onMajor ? 6 : 12;
-    ctx.strokeStyle = onMajor ? 'rgba(92, 92, 92, 0.95)' : 'rgba(138, 138, 138, 0.75)';
-    ctx.beginPath();
-    ctx.moveTo(sx + 0.5, tickTop);
-    ctx.lineTo(sx + 0.5, rulerHeight - 1);
-    ctx.stroke();
-
-    if (onMajor) {
-      const cm = wx * DOT_CM;
-      ctx.fillStyle = '#404040';
-      ctx.font = '11px "Yu Gothic UI"';
-      ctx.fillText(formatCmLabel(cm), sx + 3, 11);
-    }
-  }
-
-  ctx.restore();
-}
-
 function drawTrackLengthOverlay() {
   if (state.mode !== 'track' || !state.draftingTrackStart || !state.mousePreview) {
     return;
   }
 
   const lengthDot = distance(state.draftingTrackStart, state.mousePreview);
-  const lengthCm = lengthDot * DOT_CM;
-  const lengthM = lengthCm / 100;
-  const minM = state.settings.minTrackLength;
+  const minLen = state.settings.minTrackLength;
   const enough = lengthDot >= state.settings.minTrackLength;
-  const label = `${lengthM.toFixed(2)} m / ${Math.round(lengthCm)} cm`;
+  const label = `${lengthDot.toFixed(2)} ${UNIT_LABEL}`;
 
   const screen = worldToScreen(state.mousePreview);
   let x = screen.x + 14;
@@ -897,7 +837,7 @@ function drawTrackLengthOverlay() {
   // Show the minimum target for easier snapping to required length.
   ctx.fillStyle = enough ? 'rgba(191, 219, 254, 0.9)' : 'rgba(254, 202, 202, 0.95)';
   ctx.font = '10px "Yu Gothic UI"';
-  ctx.fillText(`min ${minM.toFixed(1)} m`, x + padX, y - 4);
+  ctx.fillText(`min ${minLen.toFixed(1)} ${UNIT_LABEL}`, x + padX, y - 4);
   ctx.restore();
 }
 
@@ -968,7 +908,7 @@ function drawTracks() {
     const p = state.mousePreview;
     const hasStart = Boolean(state.draftingTrackStart);
     const ringLineWidth = clamp(1.6 / state.view.zoom, 0.14, 0.5);
-    // Match cursor ring outer edge to clearance: 300cm total => 150cm radius (= 3 dots).
+    // Match cursor ring outer edge to clearance: total 6u => radius 3u.
     const ringRadius = Math.max(0.05, CLEARANCE_HALF_WIDTH_DOT - ringLineWidth / 2);
     const innerRadius = hasStart ? 0.28 : 0.34;
 
@@ -1595,19 +1535,13 @@ layerTrain.addEventListener('change', () => {
   render();
 });
 
-layerRuler.addEventListener('change', () => {
-  state.layers.ruler = layerRuler.checked;
-  render();
-});
-
 for (const btn of modeButtons) {
   btn.addEventListener('click', () => setMode(btn.dataset.mode));
 }
 
 function refreshSettingLabels() {
-  trackWidthLabel.textContent = `${Math.round(state.settings.trackWidth)}m`;
-  const cm = Math.round(state.settings.minTrackLength * DOT_CM);
-  minTrackLenLabel.textContent = `${state.settings.minTrackLength.toFixed(1)}m (${cm}cm)`;
+  trackWidthLabel.textContent = `${Math.round(state.settings.trackWidth)}${UNIT_LABEL}`;
+  minTrackLenLabel.textContent = `${state.settings.minTrackLength.toFixed(1)}${UNIT_LABEL}`;
   syncTrackControlInputs();
 }
 
