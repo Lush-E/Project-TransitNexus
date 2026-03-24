@@ -1,6 +1,13 @@
 const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 const hint = document.getElementById('hint');
+const titleScreen = document.getElementById('titleScreen');
+const titleMainMenu = document.getElementById('titleMainMenu');
+const titleNewGameBtn = document.getElementById('titleNewGameBtn');
+const titleLoadGameBtn = document.getElementById('titleLoadGameBtn');
+const titleContinueBtn = document.getElementById('titleContinueBtn');
+const titleExitBtn = document.getElementById('titleExitBtn');
+const titleInfo = document.getElementById('titleInfo');
 const clearBtn = document.getElementById('clearBtn');
 const quickSaveBtn = document.getElementById('quickSaveBtn');
 const saveBtn = document.getElementById('saveBtn');
@@ -16,6 +23,7 @@ const layerTrain = document.getElementById('layerTrain');
 const modeButtons = Array.from(document.querySelectorAll('.tool[data-mode]'));
 const zoomStat = document.getElementById('zoomStat');
 const countStat = document.getElementById('countStat');
+const saveNotice = document.getElementById('saveNotice');
 const gridSizeSelect = document.getElementById('gridSizeSelect');
 const snapToggle = document.getElementById('snapToggle');
 const orthoToggle = document.getElementById('orthoToggle');
@@ -31,10 +39,15 @@ const UNIT_LABEL = 'u';
 const CLEARANCE_HALF_WIDTH_DOT = 2; // 2 units each side
 const PAPER_COLOR = '#ffffff';
 const ZOOM_BASELINE = 13.9; // Treat 1390% as 0% in status display.
-const PLATFORM_WIDTH_DOT = 0.9;
+const PLATFORM_WIDTH_DOT = 0.22;
 const PLATFORM_MIN_LENGTH_DOT = 0.6;
+const PLATFORM_INTERACT_RADIUS_DOT = 0.72;
 const TRACK_BODY_ALPHA = 0.78;
 const QUICK_SAVE_KEY = 'transitnexus.quickSave.v1';
+const LAST_SELECTED_SAVE_KEY = 'transitnexus.lastSelectedSave.v1';
+const TRACK_TOPOLOGY_SNAP_TOLERANCE = 0.35;
+const DEFAULT_OFFSET_X_RATIO = 0.05;
+const DEFAULT_OFFSET_Y_RATIO = 0.62;
 const TRAIN_DIM = {
   carLengthDot: 20,
   carHeightDot: 2.8,
@@ -75,7 +88,7 @@ const state = {
     trackLevel: 0,
     trackLineType: 'solid',
     trackColor: '#25698a',
-    minTrackLength: 3
+    minTrackLength: 1
   },
   layers: {
     grid: true,
@@ -135,7 +148,7 @@ function applySnapshot(snap) {
 
 function buildSerializableState() {
   return {
-    version: 2,
+    version: 5,
     unitSystem: UNIT_LABEL,
     savedAt: new Date().toISOString(),
     tracks: clone(state.tracks),
@@ -159,11 +172,136 @@ function buildSerializableState() {
   };
 }
 
+function normalizeLoadedTrackTopology(tracks) {
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    return [];
+  }
+
+  const result = tracks.map((seg) => ({
+    a: { x: seg.a.x, y: seg.a.y },
+    b: { x: seg.b.x, y: seg.b.y },
+    level: normalizeTrackLevel(seg.level),
+    lineType: normalizeTrackLineType(seg.lineType),
+    color: normalizeTrackColor(seg.color)
+  }));
+
+  const endpoints = [];
+  for (let i = 0; i < result.length; i += 1) {
+    endpoints.push({ segIndex: i, endpoint: 'a' });
+    endpoints.push({ segIndex: i, endpoint: 'b' });
+  }
+
+  // Pass 1: merge near endpoint pairs so old saves with tiny coordinate drift connect.
+  const parent = endpoints.map((_, i) => i);
+  const find = (x) => {
+    let p = x;
+    while (parent[p] !== p) {
+      parent[p] = parent[parent[p]];
+      p = parent[p];
+    }
+    return p;
+  };
+  const union = (x, y) => {
+    const rx = find(x);
+    const ry = find(y);
+    if (rx !== ry) {
+      parent[ry] = rx;
+    }
+  };
+
+  for (let i = 0; i < endpoints.length; i += 1) {
+    const ei = endpoints[i];
+    const pi = result[ei.segIndex][ei.endpoint];
+    for (let j = i + 1; j < endpoints.length; j += 1) {
+      const ej = endpoints[j];
+      const pj = result[ej.segIndex][ej.endpoint];
+      if (distance(pi, pj) <= TRACK_TOPOLOGY_SNAP_TOLERANCE) {
+        union(i, j);
+      }
+    }
+  }
+
+  const groups = new Map();
+  for (let i = 0; i < endpoints.length; i += 1) {
+    const root = find(i);
+    if (!groups.has(root)) {
+      groups.set(root, []);
+    }
+    groups.get(root).push(i);
+  }
+
+  for (const idxList of groups.values()) {
+    if (idxList.length < 2) {
+      continue;
+    }
+    let sx = 0;
+    let sy = 0;
+    for (const idx of idxList) {
+      const ref = endpoints[idx];
+      const p = result[ref.segIndex][ref.endpoint];
+      sx += p.x;
+      sy += p.y;
+    }
+    const ax = sx / idxList.length;
+    const ay = sy / idxList.length;
+    for (const idx of idxList) {
+      const ref = endpoints[idx];
+      result[ref.segIndex][ref.endpoint] = { x: ax, y: ay };
+    }
+  }
+
+  // Pass 2: snap endpoints that touch another segment interior (branch-on-midpoint).
+  for (let i = 0; i < result.length; i += 1) {
+    for (const endpoint of ['a', 'b']) {
+      const p = result[i][endpoint];
+      let best = null;
+      for (let j = 0; j < result.length; j += 1) {
+        if (i === j) {
+          continue;
+        }
+        const other = result[j];
+        const pr = nearestPointOnSegment(p, other.a, other.b);
+        if (pr.t <= 0.02 || pr.t >= 0.98) {
+          continue;
+        }
+        if (pr.dist > TRACK_TOPOLOGY_SNAP_TOLERANCE) {
+          continue;
+        }
+        if (!best || pr.dist < best.dist) {
+          best = pr;
+        }
+      }
+      if (best) {
+        result[i][endpoint] = { x: best.x, y: best.y };
+      }
+    }
+  }
+
+  return result;
+}
+
 function sanitizeLoadedState(raw) {
   const safe = raw && typeof raw === 'object' ? raw : {};
+  const saveVersion = Number.isFinite(Number(safe.version)) ? Number(safe.version) : 1;
+  const loadedMinTrackLength = Number(safe.settings?.minTrackLength);
+  const migratedMinTrackLength = saveVersion < 3
+    ? 1
+    : (Number.isFinite(loadedMinTrackLength) ? loadedMinTrackLength : state.settings.minTrackLength);
   const loadedUnit = typeof safe.unitSystem === 'string' ? safe.unitSystem : UNIT_LABEL;
+  const normalizedTracks = Array.isArray(safe.tracks)
+    ? safe.tracks
+      .filter((seg) => seg && seg.a && seg.b)
+      .map((seg) => ({
+        a: { x: Number(seg.a.x) || 0, y: Number(seg.a.y) || 0 },
+        b: { x: Number(seg.b.x) || 0, y: Number(seg.b.y) || 0 },
+        level: normalizeTrackLevel(seg.level),
+        lineType: normalizeTrackLineType(seg.lineType),
+        color: normalizeTrackColor(seg.color)
+      }))
+    : [];
+  const topologyNormalizedTracks = normalizeLoadedTrackTopology(normalizedTracks);
   return {
-    tracks: Array.isArray(safe.tracks) ? safe.tracks : [],
+    tracks: topologyNormalizedTracks,
     platforms: Array.isArray(safe.platforms) ? safe.platforms : [],
     trains: Array.isArray(safe.trains) ? safe.trains : [],
     settings: {
@@ -174,7 +312,7 @@ function sanitizeLoadedState(raw) {
       trackLevel: normalizeTrackLevel(safe.settings?.trackLevel),
       trackLineType: normalizeTrackLineType(safe.settings?.trackLineType),
       trackColor: normalizeTrackColor(safe.settings?.trackColor),
-      minTrackLength: Number(safe.settings?.minTrackLength) || state.settings.minTrackLength
+      minTrackLength: migratedMinTrackLength
     },
     view: {
       zoom: clamp(Number(safe.view?.zoom) || state.view.zoom, state.view.minZoom, state.view.maxZoom),
@@ -244,7 +382,15 @@ function saveDiagramToFile() {
 
 function quickSaveToLocal() {
   const payload = buildSerializableState();
-  localStorage.setItem(QUICK_SAVE_KEY, JSON.stringify(payload));
+  try {
+    localStorage.setItem(QUICK_SAVE_KEY, JSON.stringify(payload));
+    const hhmmss = new Date().toLocaleTimeString('ja-JP', { hour12: false });
+    setSaveNotice(`QSV: 保存済み ${hhmmss}`);
+    return true;
+  } catch (_err) {
+    setSaveNotice('QSV: 保存失敗', true);
+    return false;
+  }
 }
 
 function restoreQuickSaveFromLocal() {
@@ -263,12 +409,34 @@ function restoreQuickSaveFromLocal() {
   }
 }
 
-function loadDiagramFromFile(file) {
+function restoreLastSelectedSaveFromLocal() {
+  const text = localStorage.getItem(LAST_SELECTED_SAVE_KEY);
+  if (!text) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    applyLoadedState(parsed);
+    return true;
+  } catch (_err) {
+    localStorage.removeItem(LAST_SELECTED_SAVE_KEY);
+    return false;
+  }
+}
+
+function loadDiagramFromFile(file, options = {}) {
+  const onSuccess = typeof options.onSuccess === 'function' ? options.onSuccess : null;
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const parsed = JSON.parse(String(reader.result || '{}'));
       applyLoadedState(parsed);
+      localStorage.setItem(LAST_SELECTED_SAVE_KEY, JSON.stringify(parsed));
+      setSaveNotice(`LOD: ${file.name}`);
+      if (onSuccess) {
+        onSuccess();
+      }
     } catch (_err) {
       alert('読み込みに失敗しました。JSONファイルを確認してください。');
     }
@@ -278,6 +446,126 @@ function loadDiagramFromFile(file) {
   };
   reader.readAsText(file, 'utf-8');
 }
+
+function resetDraftingState() {
+  state.draftingTrackStart = null;
+  state.draftingPlatformStart = null;
+  state.draftingPlatformCurrent = null;
+  state.draggingSelection = false;
+  state.selectionMoved = false;
+  state.lastDragWorld = null;
+  state.mousePreview = null;
+}
+
+function resetViewToDefault() {
+  state.view.zoom = ZOOM_BASELINE;
+  state.view.offsetX = canvas.width * DEFAULT_OFFSET_X_RATIO;
+  state.view.offsetY = canvas.height * DEFAULT_OFFSET_Y_RATIO;
+}
+
+function clearAllData() {
+  state.tracks = [];
+  state.platforms = [];
+  state.trains = [];
+  state.selection = null;
+  resetDraftingState();
+}
+
+function resetEditorSettings() {
+  state.settings.gridSize = 1;
+  state.settings.snap = true;
+  state.settings.ortho = false;
+  state.settings.trackWidth = 2;
+  state.settings.trackLevel = 0;
+  state.settings.trackLineType = 'solid';
+  state.settings.trackColor = '#25698a';
+  state.settings.minTrackLength = 1;
+
+  if (gridSizeSelect) {
+    gridSizeSelect.value = '1';
+  }
+  if (snapToggle) {
+    snapToggle.checked = true;
+  }
+  if (orthoToggle) {
+    orthoToggle.checked = false;
+  }
+  if (trackWidthRange) {
+    trackWidthRange.value = '2';
+  }
+  if (trackLevelInput) {
+    trackLevelInput.value = '0';
+  }
+  if (trackLineTypeSelect) {
+    trackLineTypeSelect.value = 'solid';
+  }
+  if (trackColorInput) {
+    trackColorInput.value = '#25698a';
+  }
+  if (minTrackLenRange) {
+    minTrackLenRange.value = '1';
+  }
+}
+
+function setTitleInfo(message = '', isError = false) {
+  if (!titleInfo) {
+    return;
+  }
+  titleInfo.textContent = message;
+  titleInfo.style.color = isError ? '#ffd8d8' : '#a8bdd3';
+}
+
+function showTitleMain() {
+  if (!titleMainMenu) {
+    return;
+  }
+  titleMainMenu.hidden = false;
+  setTitleInfo('');
+}
+
+let saveNoticeResetTimer = null;
+function setSaveNotice(message, isError = false) {
+  if (!saveNotice) {
+    return;
+  }
+  saveNotice.textContent = message;
+  saveNotice.style.borderColor = isError ? '#8e4e4e' : '#3f4e5f';
+  saveNotice.style.background = isError ? '#5c2f34' : '#202a35';
+  saveNotice.style.color = isError ? '#ffd8d8' : '#d7e4f2';
+
+  if (saveNoticeResetTimer) {
+    clearTimeout(saveNoticeResetTimer);
+  }
+  saveNoticeResetTimer = setTimeout(() => {
+    saveNotice.textContent = 'QSV: -';
+    saveNotice.style.borderColor = '#3f4e5f';
+    saveNotice.style.background = '#202a35';
+    saveNotice.style.color = '#d7e4f2';
+  }, 2800);
+}
+
+function hideTitleAndEnterEditor() {
+  if (titleScreen) {
+    titleScreen.hidden = true;
+  }
+  setMode('track');
+  render();
+}
+
+function startNewGame() {
+  clearAllData();
+  resetEditorSettings();
+  resetViewToDefault();
+  commitHistory();
+  refreshSettingLabels();
+  hideTitleAndEnterEditor();
+}
+
+function isTitleVisible() {
+  return Boolean(titleScreen && !titleScreen.hidden);
+}
+
+let titleFileLoadPending = false;
 
 function commitHistory() {
   const snap = snapshotState();
@@ -422,6 +710,13 @@ function endpointKey(p) {
   return `${p.x.toFixed(4)},${p.y.toFixed(4)}`;
 }
 
+function platformNodeKey(p) {
+  const mergeStep = 0.3;
+  const x = Math.round(p.x / mergeStep);
+  const y = Math.round(p.y / mergeStep);
+  return `${x},${y}`;
+}
+
 function collectTrackNodeCounts() {
   const counts = new Map();
   for (const seg of state.tracks) {
@@ -488,6 +783,11 @@ function getPreviewWorldWidth() {
   const trackScreenWidth = Math.max(baseScreenWidth, 2.8);
   const previewScreenWidth = Math.max(trackScreenWidth * 0.72, 1.8);
   return previewScreenWidth / state.view.zoom;
+}
+
+function getPlatformWorldWidth() {
+  const platformScreenWidth = Math.max(PLATFORM_WIDTH_DOT * state.view.zoom, 1.8);
+  return platformScreenWidth / Math.max(0.0001, state.view.zoom);
 }
 
 function normalizeTrackColor(value) {
@@ -602,6 +902,66 @@ function drawLevelCrossingHints() {
   ctx.setLineDash([]);
 }
 
+function drawDeadEndMarkers(nodeCounts) {
+  if (state.tracks.length === 0) {
+    return;
+  }
+
+  const markerHalfLength = 1.5; // +/-1.5u from endpoint
+  ctx.lineWidth = getPlatformWorldWidth();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  const drawAtEndpoint = (end, other, segColor) => {
+    const dx = other.x - end.x;
+    const dy = other.y - end.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+      return;
+    }
+
+    const nx = -dy / len;
+    const ny = dx / len;
+    ctx.strokeStyle = normalizeTrackColor(segColor);
+    ctx.beginPath();
+    ctx.moveTo(end.x - nx * markerHalfLength, end.y - ny * markerHalfLength);
+    ctx.lineTo(end.x + nx * markerHalfLength, end.y + ny * markerHalfLength);
+    ctx.stroke();
+  };
+
+  const isEndpointConnected = (segIndex, endpoint) => {
+    if ((nodeCounts.get(endpointKey(endpoint)) || 0) >= 2) {
+      return true;
+    }
+
+    // Also treat contact with another segment interior as a valid junction.
+    const interiorSnapTol = clamp(6 / Math.max(0.0001, state.view.zoom), 0.12, 0.45);
+    for (let i = 0; i < state.tracks.length; i += 1) {
+      if (i === segIndex) {
+        continue;
+      }
+
+      const other = state.tracks[i];
+      const pr = nearestPointOnSegment(endpoint, other.a, other.b);
+      if (pr.t > 0.02 && pr.t < 0.98 && pr.dist <= interiorSnapTol) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    const seg = state.tracks[i];
+    if (!isEndpointConnected(i, seg.a)) {
+      drawAtEndpoint(seg.a, seg.b, seg.color);
+    }
+    if (!isEndpointConnected(i, seg.b)) {
+      drawAtEndpoint(seg.b, seg.a, seg.color);
+    }
+  }
+}
+
 function buildTrackSegment(start, end) {
   return {
     a: { x: start.x, y: start.y },
@@ -651,6 +1011,47 @@ function getPlatformSegments() {
   return state.platforms.filter((p) => p && p.a && p.b);
 }
 
+function getPlatformNodes() {
+  const nodes = new Map();
+  for (const seg of getPlatformSegments()) {
+    nodes.set(platformNodeKey(seg.a), seg.a);
+    nodes.set(platformNodeKey(seg.b), seg.b);
+  }
+  return Array.from(nodes.values());
+}
+
+function findNearestPlatformNode(point, snapStrength = 'normal') {
+  const nodes = getPlatformNodes();
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  const baseRadiusPx = snapStrength === 'light' ? 6 : 9;
+  const snapRadiusWorld = clamp(baseRadiusPx / Math.max(0.0001, state.view.zoom), 0.2, 0.7);
+  let best = null;
+  for (const node of nodes) {
+    const d = distance(point, node);
+    if (d <= snapRadiusWorld && (!best || d < best.dist)) {
+      best = { x: node.x, y: node.y, dist: d };
+    }
+  }
+  return best;
+}
+
+function resolvePlatformPoint(rawPoint, startPoint, options = {}) {
+  const { enableNodeSnap = true } = options;
+  const constrained = applyTrackConstraint(rawPoint, startPoint);
+  if (!enableNodeSnap) {
+    return constrained;
+  }
+
+  const nearNode = findNearestPlatformNode(constrained, startPoint ? 'light' : 'normal');
+  if (nearNode && (!startPoint || distance(startPoint, nearNode) > 0.0001)) {
+    return { x: nearNode.x, y: nearNode.y };
+  }
+  return constrained;
+}
+
 function polygonArea(points) {
   let sum = 0;
   for (let i = 0; i < points.length; i += 1) {
@@ -677,8 +1078,8 @@ function buildPlatformFillPolygons(segments) {
   };
 
   for (const seg of segments) {
-    const ka = endpointKey(seg.a);
-    const kb = endpointKey(seg.b);
+    const ka = platformNodeKey(seg.a);
+    const kb = platformNodeKey(seg.b);
     nodePoints.set(ka, seg.a);
     nodePoints.set(kb, seg.b);
     addNeighbor(ka, kb);
@@ -880,6 +1281,7 @@ function drawTracks() {
   ctx.globalAlpha = 1;
 
   drawLevelCrossingHints();
+  drawDeadEndMarkers(nodeCounts);
 
   if (state.mode === 'track' && state.draftingTrackStart) {
     const previewEnd = state.mousePreview?.x !== undefined
@@ -980,7 +1382,7 @@ function drawTrackClearance() {
 }
 
 function drawPlatforms() {
-  const platformWorldWidth = Math.max(PLATFORM_WIDTH_DOT, 1.0 / Math.max(0.0001, state.view.zoom));
+  const platformWorldWidth = getPlatformWorldWidth();
   const platformSegments = getPlatformSegments();
   const platformPolygons = buildPlatformFillPolygons(platformSegments);
 
@@ -1024,6 +1426,25 @@ function drawPlatforms() {
     ctx.lineTo(state.draftingPlatformCurrent.x, state.draftingPlatformCurrent.y);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  if (state.mode === 'platform' && state.mousePreview) {
+    const p = state.mousePreview;
+    const hasStart = Boolean(state.draftingPlatformStart);
+    const ringLineWidth = clamp(1.5 / state.view.zoom, 0.14, 0.48);
+    const ringRadius = hasStart ? 0.56 : 0.62;
+    const innerRadius = hasStart ? 0.16 : 0.2;
+
+    ctx.strokeStyle = hasStart ? 'rgba(125, 125, 125, 0.96)' : 'rgba(108, 108, 108, 0.95)';
+    ctx.lineWidth = ringLineWidth;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, ringRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = hasStart ? 'rgba(156, 156, 156, 0.95)' : 'rgba(130, 130, 130, 0.92)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, innerRadius, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   if (state.selection && state.selection.type === 'platform') {
@@ -1149,7 +1570,7 @@ function eraseAt(point) {
     const p = state.platforms[i];
     if (p.a && p.b) {
       const pr = nearestPointOnSegment(point, p.a, p.b);
-      if (pr.dist < PLATFORM_WIDTH_DOT * 0.7) {
+      if (pr.dist < PLATFORM_INTERACT_RADIUS_DOT) {
         state.platforms.splice(i, 1);
         return true;
       }
@@ -1175,38 +1596,48 @@ function eraseAt(point) {
 }
 
 function pickEntityAt(point) {
-  // Train first
-  for (let i = state.trains.length - 1; i >= 0; i -= 1) {
-    const tr = state.trains[i];
-    if (distance(point, tr) < 2.4) {
-      return { type: 'train', index: i };
+  let best = null;
+  const pushCandidate = (type, index, dist, radius) => {
+    if (dist > radius) {
+      return;
     }
+    const score = dist / Math.max(radius, 0.0001);
+    const priority = type === 'track' ? 0 : type === 'platform' ? 1 : 2;
+    if (!best || score < best.score || (Math.abs(score - best.score) < 1e-6 && priority < best.priority)) {
+      best = { type, index, score, priority };
+    }
+  };
+
+  for (let i = 0; i < state.trains.length; i += 1) {
+    const tr = state.trains[i];
+    pushCandidate('train', i, distance(point, tr), 2.4);
   }
 
-  for (let i = state.platforms.length - 1; i >= 0; i -= 1) {
+  for (let i = 0; i < state.platforms.length; i += 1) {
     const p = state.platforms[i];
     if (p.a && p.b) {
       const pr = nearestPointOnSegment(point, p.a, p.b);
-      if (pr.dist < PLATFORM_WIDTH_DOT * 0.8) {
-        return { type: 'platform', index: i };
-      }
+      pushCandidate('platform', i, pr.dist, PLATFORM_INTERACT_RADIUS_DOT);
       continue;
     }
 
-    if (point.x >= p.x && point.x <= p.x + p.w && point.y >= p.y && point.y <= p.y + p.h) {
-      return { type: 'platform', index: i };
-    }
+    const dx = point.x < p.x ? p.x - point.x : point.x > (p.x + p.w) ? point.x - (p.x + p.w) : 0;
+    const dy = point.y < p.y ? p.y - point.y : point.y > (p.y + p.h) ? point.y - (p.y + p.h) : 0;
+    pushCandidate('platform', i, Math.hypot(dx, dy), PLATFORM_INTERACT_RADIUS_DOT);
   }
 
-  for (let i = state.tracks.length - 1; i >= 0; i -= 1) {
+  // Track picks are based on centerline nearest distance.
+  const trackPickRadius = clamp(7 / Math.max(0.0001, state.view.zoom), 0.18, 0.8);
+  for (let i = 0; i < state.tracks.length; i += 1) {
     const seg = state.tracks[i];
     const pr = nearestPointOnSegment(point, seg.a, seg.b);
-    if (pr.dist < state.settings.trackWidth + 0.9) {
-      return { type: 'track', index: i };
-    }
+    pushCandidate('track', i, pr.dist, trackPickRadius);
   }
 
-  return null;
+  if (!best) {
+    return null;
+  }
+  return { type: best.type, index: best.index };
 }
 
 function moveSelectionBy(dx, dy) {
@@ -1334,7 +1765,7 @@ canvas.addEventListener('mousemove', (ev) => {
   const p = state.mode === 'track'
     ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
     : state.mode === 'platform'
-      ? applyTrackConstraint(raw, state.draftingPlatformStart)
+      ? resolvePlatformPoint(raw, state.draftingPlatformStart, { enableNodeSnap: !ev.altKey })
       : quantizePoint(raw);
   state.mousePreview = p;
   if (state.mode === 'platform' && state.draftingPlatformStart) {
@@ -1375,14 +1806,15 @@ canvas.addEventListener('mousedown', (ev) => {
   const p = state.mode === 'track'
     ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
     : state.mode === 'platform'
-      ? applyTrackConstraint(raw, state.draftingPlatformStart)
+      ? resolvePlatformPoint(raw, state.draftingPlatformStart, { enableNodeSnap: !ev.altKey })
       : quantizePoint(raw);
 
   if (state.mode === 'track') {
     if (!state.draftingTrackStart) {
       state.draftingTrackStart = p;
     } else {
-      if (distance(state.draftingTrackStart, p) >= state.settings.minTrackLength) {
+      const minTrackLength = Math.max(1, Number(state.settings.minTrackLength) || 1);
+      if (distance(state.draftingTrackStart, p) >= minTrackLength) {
         state.tracks.push(buildTrackSegment(state.draftingTrackStart, p));
         commitHistory();
       }
@@ -1475,12 +1907,7 @@ clearBtn.addEventListener('click', () => {
   if (state.tracks.length === 0 && state.platforms.length === 0 && state.trains.length === 0) {
     return;
   }
-  state.tracks = [];
-  state.platforms = [];
-  state.trains = [];
-  state.draftingTrackStart = null;
-  state.draftingPlatformStart = null;
-  state.draftingPlatformCurrent = null;
+  clearAllData();
   commitHistory();
   render();
 });
@@ -1500,10 +1927,49 @@ loadBtn.addEventListener('click', () => {
 loadFileInput.addEventListener('change', () => {
   const file = loadFileInput.files && loadFileInput.files[0];
   if (file) {
-    loadDiagramFromFile(file);
+    loadDiagramFromFile(file, {
+      onSuccess: () => {
+        if (titleFileLoadPending) {
+          titleFileLoadPending = false;
+          hideTitleAndEnterEditor();
+        }
+      }
+    });
   }
+  titleFileLoadPending = false;
   loadFileInput.value = '';
 });
+
+if (titleNewGameBtn) {
+  titleNewGameBtn.addEventListener('click', () => {
+    startNewGame();
+  });
+}
+
+if (titleLoadGameBtn) {
+  titleLoadGameBtn.addEventListener('click', () => {
+    titleFileLoadPending = true;
+    setTitleInfo('セーブデータを選択してください。選択後すぐ読み込みます。');
+    loadFileInput.click();
+  });
+}
+
+if (titleContinueBtn) {
+  titleContinueBtn.addEventListener('click', () => {
+    if (restoreLastSelectedSaveFromLocal() || restoreQuickSaveFromLocal()) {
+      hideTitleAndEnterEditor();
+      setTitleInfo('');
+      return;
+    }
+    setTitleInfo('前回データが見つかりません。先にセーブデータを選択してください。', true);
+  });
+}
+
+if (titleExitBtn) {
+  titleExitBtn.addEventListener('click', () => {
+    window.close();
+  });
+}
 
 layerMenuBtn.addEventListener('click', () => {
   layerPanel.hidden = !layerPanel.hidden;
@@ -1608,6 +2074,10 @@ minTrackLenRange.addEventListener('input', () => {
 });
 
 window.addEventListener('keydown', (ev) => {
+  if (isTitleVisible()) {
+    return;
+  }
+
   const mod = ev.ctrlKey || ev.metaKey;
   const key = ev.key.toLowerCase();
 
@@ -1653,10 +2123,11 @@ window.addEventListener('keydown', (ev) => {
 });
 
 // Start with a composition close to the sample image scale.
-state.view.offsetX = canvas.width * 0.05;
-state.view.offsetY = canvas.height * 0.62;
+resetViewToDefault();
 commitHistory();
 refreshSettingLabels();
-if (!restoreQuickSaveFromLocal()) {
-  render();
+render();
+if (titleScreen) {
+  titleScreen.hidden = false;
+  showTitleMain();
 }

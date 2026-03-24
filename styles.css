@@ -22,6 +22,81 @@ body {
   background: var(--bg);
 }
 
+.title-screen {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 11, 16, 0.74);
+  backdrop-filter: blur(2px);
+  z-index: 120;
+}
+
+.title-screen[hidden] {
+  display: none;
+}
+
+.title-card {
+  width: min(460px, calc(100% - 32px));
+  background: linear-gradient(180deg, #1a2230 0%, #111923 100%);
+  border: 1px solid #36516c;
+  border-radius: 10px;
+  padding: 18px 18px 16px;
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+}
+
+.title-card h2 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0.06em;
+  color: #dff2ff;
+}
+
+.title-sub {
+  margin: 4px 0 12px;
+  font-size: 12px;
+  color: #95afc7;
+}
+
+.title-menu {
+  display: grid;
+  gap: 8px;
+}
+
+.title-btn {
+  border: 1px solid #2f6a8b;
+  background: #0f3a53;
+  color: #d8f1ff;
+  border-radius: 6px;
+  min-height: 38px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.title-btn:hover {
+  background: #145376;
+}
+
+.title-btn.ghost {
+  border-color: #4d6278;
+  background: #253140;
+  color: #d8e2ee;
+}
+
+.title-btn.danger {
+  border-color: #8e4e4e;
+  background: #5c2f34;
+  color: #ffd8d8;
+}
+
+.title-info {
+  min-height: 18px;
+  margin: 10px 2px 0;
+  font-size: 12px;
+  color: #a8bdd3;
+}
+
 .toolbar {
   display: grid;
   gap: 8px;

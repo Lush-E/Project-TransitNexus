@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 5,
   "unitSystem": "u",
   "savedAt": "2026-03-20T08:50:01.912Z",
   "tracks": [
@@ -352,7 +352,7 @@
     "trackLevel": 0,
     "trackLineType": "solid",
     "trackColor": "#25698a",
-    "minTrackLength": 3
+    "minTrackLength": 1
   },
   "view": {
     "zoom": 1.7300506801520645,

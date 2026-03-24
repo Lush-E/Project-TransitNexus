@@ -7,6 +7,20 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <section id="titleScreen" class="title-screen" aria-label="Title Menu">
+      <div class="title-card">
+        <h2>TransitNexus</h2>
+        <p class="title-sub">Rail Diagram Sandbox</p>
+        <div id="titleMainMenu" class="title-menu">
+          <button id="titleNewGameBtn" class="title-btn">New Game</button>
+          <button id="titleLoadGameBtn" class="title-btn">セーブデータを選択</button>
+          <button id="titleContinueBtn" class="title-btn">前回の続き</button>
+          <button id="titleExitBtn" class="title-btn danger">Exit</button>
+        </div>
+        <p id="titleInfo" class="title-info"></p>
+      </div>
+    </section>
+
     <header class="toolbar">
       <div class="toolbar-head">
         <div class="brand">
@@ -22,6 +36,7 @@
           <div class="status-chips">
             <span id="zoomStat" class="chip">500%</span>
             <span id="countStat" class="chip">T0 P0 R0</span>
+            <span id="saveNotice" class="chip">QSV: -</span>
           </div>
         </div>
       </div>
@@ -91,8 +106,8 @@
         </label>
         <label>
           Min Length
-          <input id="minTrackLenRange" type="range" min="1" max="20" step="0.5" value="3" />
-          <span id="minTrackLenLabel">3.0u</span>
+          <input id="minTrackLenRange" type="range" min="1" max="20" step="0.5" value="1" />
+          <span id="minTrackLenLabel">1.0u</span>
         </label>
       </section>
     </header>
