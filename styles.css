@@ -240,6 +240,66 @@ body {
   color: #b8cbe0;
 }
 
+.mode-guide {
+  display: grid;
+  gap: 4px;
+  padding: 7px 9px;
+  border: 1px solid #365067;
+  border-radius: 4px;
+  background: #152230;
+}
+
+.mode-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #d9ecff;
+}
+
+.mode-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: #bdd2e6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.mode-steps li {
+  margin: 0;
+}
+
+.viaduct-edit-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.viaduct-edit-switch span {
+  font-size: 12px;
+  color: #c9dbec;
+  font-weight: 700;
+}
+
+.tool.mini {
+  min-width: 62px;
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.track-settings .mode-toggle .tool.mini {
+  min-width: 54px;
+  min-height: 24px;
+  padding: 2px 8px;
+}
+
 .track-settings {
   display: flex;
   flex-wrap: wrap;
@@ -278,6 +338,50 @@ body {
 
 .track-settings .inline-check {
   min-width: 64px;
+}
+
+#viaductAreaShapeSelect {
+  min-width: 96px;
+}
+
+.track-settings label.setting-hidden {
+  display: none;
+}
+
+.level-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.level-btn {
+  min-width: 24px;
+  min-height: 24px;
+  border: 1px solid #5f7b92;
+  border-radius: 3px;
+  background: #e8f0f8;
+  color: #21384d;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.level-btn:hover {
+  background: #d7e7f6;
+}
+
+.level-indicator {
+  min-width: 84px;
+  text-align: center;
+  padding: 2px 6px;
+  border: 1px solid #4a5f73;
+  border-radius: 3px;
+  background: #1d2732;
+  color: #d4e4f4;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .stage-wrap {

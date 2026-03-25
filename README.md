@@ -18,7 +18,14 @@ TransitNexus is an Electron + Canvas based 2D rail diagram editor prototype.
   - Marker thickness: same as platform line thickness
   - Marker color: follows each track color
   - Mid-segment branch connections are treated as connected (not dead-end)
-- Save schema migrated to version 5
+- Viaduct editing split into two modes:
+  - VCT: viaduct wall line editing
+  - VAT: viaduct area editing (Paint / Erase)
+- VAT uses polygon boundary drafting:
+  - Click to add boundary points (3+)
+  - Click first point or press Enter to commit
+- Auto-merge for adjacent rectangle areas on the same level
+- Save schema migrated to version 11
 
 ## Project Files
 
@@ -51,17 +58,29 @@ or run `launcher.bat` on Windows.
 - Select mode: click to select, drag to move, Delete to remove
 - Track mode: 2-click segment placement
 - Platform mode: chained segment placement
+- Viaduct Wall mode (VCT): chained segment placement
+- Viaduct Area mode (VAT):
+  - Paint/Erase switch in settings
+  - Shape switch: Rectangle / Polygon
+  - Rectangle: 2-click area commit
+  - Polygon: click multiple vertices then press Enter
+  - Polygon draft: right click to remove the last vertex
+  - Polygon draft: Ctrl+Z also removes the last vertex (drafting only)
 - Ctrl+Z / Ctrl+Y: undo/redo
 - Ctrl+S: quick save
 
 ## Save Data Notes
 
-- Current schema version: 5
+- Current schema version: 11
 - Unit label: `u`
 - Older saves are normalized on load:
   - minTrackLength migration
   - track color/lineType/level normalization
   - topology normalization for branch connectivity (endpoint merge + interior snap)
+  - auto-generated elevated side walls are removed from legacy viaduct wall saves
+  - viaduct area data normalized to polygon format
+  - platform level normalization (missing level -> 0)
+  - train level normalization (missing level -> 0)
 
 ## Known Next Tasks
 

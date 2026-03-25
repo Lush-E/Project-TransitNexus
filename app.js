@@ -21,19 +21,36 @@ const layerClearance = document.getElementById('layerClearance');
 const layerPlatform = document.getElementById('layerPlatform');
 const layerTrain = document.getElementById('layerTrain');
 const modeButtons = Array.from(document.querySelectorAll('.tool[data-mode]'));
+const modeSettingGroups = Array.from(document.querySelectorAll('.track-settings label[data-setting-group]'));
+const viaductEditSwitch = document.getElementById('viaductEditSwitch');
+const viaductWallEditBtn = document.getElementById('viaductWallEditBtn');
+const viaductAreaEditBtn = document.getElementById('viaductAreaEditBtn');
 const zoomStat = document.getElementById('zoomStat');
 const countStat = document.getElementById('countStat');
 const saveNotice = document.getElementById('saveNotice');
+const modeLabel = document.getElementById('modeLabel');
+const modeSteps = document.getElementById('modeSteps');
 const gridSizeSelect = document.getElementById('gridSizeSelect');
 const snapToggle = document.getElementById('snapToggle');
 const orthoToggle = document.getElementById('orthoToggle');
 const trackWidthRange = document.getElementById('trackWidthRange');
 const trackWidthLabel = document.getElementById('trackWidthLabel');
 const trackLevelInput = document.getElementById('trackLevelInput');
+const levelUpBtn = document.getElementById('levelUpBtn');
+const levelDownBtn = document.getElementById('levelDownBtn');
+const levelIndicator = document.getElementById('levelIndicator');
+const trackGradientSelect = document.getElementById('trackGradientSelect');
 const trackLineTypeSelect = document.getElementById('trackLineTypeSelect');
 const trackColorInput = document.getElementById('trackColorInput');
 const minTrackLenRange = document.getElementById('minTrackLenRange');
 const minTrackLenLabel = document.getElementById('minTrackLenLabel');
+const viaductSpanRange = document.getElementById('viaductSpanRange');
+const viaductSpanLabel = document.getElementById('viaductSpanLabel');
+const viaductWallActionDrawBtn = document.getElementById('viaductWallActionDrawBtn');
+const viaductWallActionEraseBtn = document.getElementById('viaductWallActionEraseBtn');
+const viaductAreaModePaintBtn = document.getElementById('viaductAreaModePaintBtn');
+const viaductAreaModeEraseBtn = document.getElementById('viaductAreaModeEraseBtn');
+const viaductAreaShapeSelect = document.getElementById('viaductAreaShapeSelect');
 
 const UNIT_LABEL = 'u';
 const CLEARANCE_HALF_WIDTH_DOT = 2; // 2 units each side
@@ -43,9 +60,12 @@ const PLATFORM_WIDTH_DOT = 0.22;
 const PLATFORM_MIN_LENGTH_DOT = 0.6;
 const PLATFORM_INTERACT_RADIUS_DOT = 0.72;
 const TRACK_BODY_ALPHA = 0.78;
+const TRACK_ELEVATED_SIDE_COLOR = '#0f0f0f';
+const TRACK_SIDE_OFFSET_DOT = 2;
 const QUICK_SAVE_KEY = 'transitnexus.quickSave.v1';
 const LAST_SELECTED_SAVE_KEY = 'transitnexus.lastSelectedSave.v1';
 const TRACK_TOPOLOGY_SNAP_TOLERANCE = 0.35;
+const TRACK_MAX_LEVEL = 4;
 const DEFAULT_OFFSET_X_RATIO = 0.05;
 const DEFAULT_OFFSET_Y_RATIO = 0.62;
 const TRAIN_DIM = {
@@ -59,6 +79,8 @@ const TRAIN_DIM = {
 const state = {
   mode: 'select',
   tracks: [],
+  viaductWalls: [],
+  viaductAreas: [],
   platforms: [],
   trains: [],
   selection: null,
@@ -67,6 +89,12 @@ const state = {
   lastDragWorld: null,
   mousePreview: null,
   draftingTrackStart: null,
+  draftingTrackStartLevel: null,
+  draftingViaductStart: null,
+  draftingViaductCurrent: null,
+  draftingViaductAreaStart: null,
+  draftingViaductAreaCurrent: null,
+  draftingViaductAreaPoints: [],
   draftingPlatformStart: null,
   draftingPlatformCurrent: null,
   view: {
@@ -86,9 +114,15 @@ const state = {
     ortho: false,
     trackWidth: 2,
     trackLevel: 0,
+    trackGradient: 0,
     trackLineType: 'solid',
     trackColor: '#25698a',
-    minTrackLength: 1
+    minTrackLength: 1,
+    viaductSpan: 24,
+    viaductWallAction: 'draw',
+    viaductAreaMode: 'paint',
+    viaductAreaShape: 'poly',
+    viaductEditMode: 'wall'
   },
   layers: {
     grid: true,
@@ -123,6 +157,8 @@ function clone(value) {
 function snapshotState() {
   return {
     tracks: clone(state.tracks),
+    viaductWalls: clone(state.viaductWalls),
+    viaductAreas: clone(state.viaductAreas),
     platforms: clone(state.platforms),
     trains: clone(state.trains)
   };
@@ -134,6 +170,8 @@ function snapshotsEqual(a, b) {
 
 function applySnapshot(snap) {
   state.tracks = clone(snap.tracks || []);
+  state.viaductWalls = clone(snap.viaductWalls || []);
+  state.viaductAreas = clone(snap.viaductAreas || []);
   state.platforms = clone(snap.platforms || []);
   state.trains = clone(snap.trains || []);
   state.selection = null;
@@ -141,17 +179,34 @@ function applySnapshot(snap) {
   state.selectionMoved = false;
   state.lastDragWorld = null;
   state.draftingTrackStart = null;
+  state.draftingTrackStartLevel = null;
+  state.draftingViaductStart = null;
+  state.draftingViaductCurrent = null;
+  state.draftingViaductAreaStart = null;
+  state.draftingViaductAreaCurrent = null;
+  state.draftingViaductAreaPoints = [];
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
   render();
 }
 
 function buildSerializableState() {
+  const serializableViaductWalls = state.viaductWalls
+    .filter((seg) => seg && seg.a && seg.b)
+    .map((seg) => ({
+      a: { x: Number(seg.a.x) || 0, y: Number(seg.a.y) || 0 },
+      b: { x: Number(seg.b.x) || 0, y: Number(seg.b.y) || 0 },
+      level: normalizeTrackLevel(seg.level),
+      origin: seg.origin === 'manual' ? 'manual' : undefined
+    }));
+
   return {
-    version: 5,
+    version: 11,
     unitSystem: UNIT_LABEL,
     savedAt: new Date().toISOString(),
     tracks: clone(state.tracks),
+    viaductWalls: serializableViaductWalls,
+    viaductAreas: clone(state.viaductAreas),
     platforms: clone(state.platforms),
     trains: clone(state.trains),
     settings: {
@@ -160,9 +215,15 @@ function buildSerializableState() {
       ortho: state.settings.ortho,
       trackWidth: state.settings.trackWidth,
       trackLevel: state.settings.trackLevel,
+      trackGradient: state.settings.trackGradient,
       trackLineType: state.settings.trackLineType,
       trackColor: state.settings.trackColor,
-      minTrackLength: state.settings.minTrackLength
+      minTrackLength: state.settings.minTrackLength,
+      viaductSpan: state.settings.viaductSpan,
+      viaductWallAction: state.settings.viaductWallAction,
+      viaductAreaMode: state.settings.viaductAreaMode,
+      viaductAreaShape: state.settings.viaductAreaShape,
+      viaductEditMode: state.settings.viaductEditMode
     },
     view: {
       zoom: state.view.zoom,
@@ -180,9 +241,13 @@ function normalizeLoadedTrackTopology(tracks) {
   const result = tracks.map((seg) => ({
     a: { x: seg.a.x, y: seg.a.y },
     b: { x: seg.b.x, y: seg.b.y },
-    level: normalizeTrackLevel(seg.level),
+    level: normalizeTrackLevel(seg.levelStart ?? seg.level),
+    levelStart: normalizeTrackLevel(seg.levelStart ?? seg.level),
+    levelEnd: normalizeTrackLevel(seg.levelEnd ?? seg.level),
     lineType: normalizeTrackLineType(seg.lineType),
-    color: normalizeTrackColor(seg.color)
+    color: normalizeTrackColor(seg.color),
+    sideDisabledPositive: seg.sideDisabledPositive === true,
+    sideDisabledNegative: seg.sideDisabledNegative === true
   }));
 
   const endpoints = [];
@@ -280,6 +345,53 @@ function normalizeLoadedTrackTopology(tracks) {
   return result;
 }
 
+function pointsNear(a, b, tolerance = 0.06) {
+  return distance(a, b) <= tolerance;
+}
+
+function segmentsNear(a1, b1, a2, b2, tolerance = 0.06) {
+  const same = pointsNear(a1, a2, tolerance) && pointsNear(b1, b2, tolerance);
+  const reversed = pointsNear(a1, b2, tolerance) && pointsNear(b1, a2, tolerance);
+  return same || reversed;
+}
+
+function isAutoGeneratedTrackSideWall(wall, tracks) {
+  if (!wall || !wall.a || !wall.b || !Array.isArray(tracks) || tracks.length === 0) {
+    return false;
+  }
+
+  for (const seg of tracks) {
+    const offset = getTrackSideOffset(seg);
+    if (offset <= 0) {
+      continue;
+    }
+
+    const dx = seg.b.x - seg.a.x;
+    const dy = seg.b.y - seg.a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+      continue;
+    }
+
+    const nx = -dy / len;
+    const ny = dx / len;
+
+    const posA = { x: seg.a.x + nx * offset, y: seg.a.y + ny * offset };
+    const posB = { x: seg.b.x + nx * offset, y: seg.b.y + ny * offset };
+    if (segmentsNear(wall.a, wall.b, posA, posB)) {
+      return true;
+    }
+
+    const negA = { x: seg.a.x - nx * offset, y: seg.a.y - ny * offset };
+    const negB = { x: seg.b.x - nx * offset, y: seg.b.y - ny * offset };
+    if (segmentsNear(wall.a, wall.b, negA, negB)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function sanitizeLoadedState(raw) {
   const safe = raw && typeof raw === 'object' ? raw : {};
   const saveVersion = Number.isFinite(Number(safe.version)) ? Number(safe.version) : 1;
@@ -296,23 +408,118 @@ function sanitizeLoadedState(raw) {
         b: { x: Number(seg.b.x) || 0, y: Number(seg.b.y) || 0 },
         level: normalizeTrackLevel(seg.level),
         lineType: normalizeTrackLineType(seg.lineType),
-        color: normalizeTrackColor(seg.color)
+        color: normalizeTrackColor(seg.color),
+        sideDisabledPositive: seg.sideDisabledPositive === true,
+        sideDisabledNegative: seg.sideDisabledNegative === true
       }))
     : [];
   const topologyNormalizedTracks = normalizeLoadedTrackTopology(normalizedTracks);
+  const normalizedViaductWalls = Array.isArray(safe.viaductWalls)
+    ? safe.viaductWalls
+      .filter((seg) => seg && seg.a && seg.b)
+      .map((seg) => ({
+        a: { x: Number(seg.a.x) || 0, y: Number(seg.a.y) || 0 },
+        b: { x: Number(seg.b.x) || 0, y: Number(seg.b.y) || 0 },
+        level: normalizeTrackLevel(seg.level),
+        origin: seg.origin === 'manual' ? 'manual' : undefined
+      }))
+      .filter((seg) => {
+        if (seg.origin === 'manual') {
+          return true;
+        }
+        if (saveVersion >= 11) {
+          return true;
+        }
+        return !isAutoGeneratedTrackSideWall(seg, topologyNormalizedTracks);
+      })
+    : [];
+  const normalizedViaductAreas = Array.isArray(safe.viaductAreas)
+    ? safe.viaductAreas
+      .map((area) => {
+        if (area && Array.isArray(area.points) && area.points.length >= 3) {
+          return {
+            level: normalizeTrackLevel(area.level),
+            points: area.points
+              .filter((p) => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)))
+              .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+          };
+        }
+        if (area && area.a && area.b) {
+          const x1 = Number(area.a.x) || 0;
+          const y1 = Number(area.a.y) || 0;
+          const x2 = Number(area.b.x) || 0;
+          const y2 = Number(area.b.y) || 0;
+          return {
+            level: normalizeTrackLevel(area.level),
+            points: [
+              { x: Math.min(x1, x2), y: Math.min(y1, y2) },
+              { x: Math.max(x1, x2), y: Math.min(y1, y2) },
+              { x: Math.max(x1, x2), y: Math.max(y1, y2) },
+              { x: Math.min(x1, x2), y: Math.max(y1, y2) }
+            ]
+          };
+        }
+        return null;
+      })
+      .filter((area) => area && Array.isArray(area.points) && area.points.length >= 3)
+    : [];
+  const normalizedPlatforms = Array.isArray(safe.platforms)
+    ? safe.platforms
+      .map((p) => {
+        if (p && p.a && p.b) {
+          return {
+            a: { x: Number(p.a.x) || 0, y: Number(p.a.y) || 0 },
+            b: { x: Number(p.b.x) || 0, y: Number(p.b.y) || 0 },
+            level: normalizeTrackLevel(p.level)
+          };
+        }
+
+        if (p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y))
+          && Number.isFinite(Number(p.w)) && Number.isFinite(Number(p.h))) {
+          return {
+            x: Number(p.x) || 0,
+            y: Number(p.y) || 0,
+            w: Number(p.w) || 0,
+            h: Number(p.h) || 0,
+            level: normalizeTrackLevel(p.level)
+          };
+        }
+
+        return null;
+      })
+      .filter((p) => p)
+    : [];
   return {
     tracks: topologyNormalizedTracks,
-    platforms: Array.isArray(safe.platforms) ? safe.platforms : [],
-    trains: Array.isArray(safe.trains) ? safe.trains : [],
+    viaductWalls: normalizedViaductWalls,
+    viaductAreas: normalizedViaductAreas,
+    platforms: normalizedPlatforms,
+    trains: Array.isArray(safe.trains)
+      ? safe.trains
+        .filter((tr) => tr && Number.isFinite(Number(tr.x)) && Number.isFinite(Number(tr.y)))
+        .map((tr) => ({
+          x: Number(tr.x) || 0,
+          y: Number(tr.y) || 0,
+          angle: Number.isFinite(Number(tr.angle)) ? Number(tr.angle) : 0,
+          cars: clamp(Math.round(Number(tr.cars) || 4), 1, 10),
+          level: normalizeTrackLevel(tr.level)
+        }))
+      : [],
     settings: {
       gridSize: Number(safe.settings?.gridSize) || state.settings.gridSize,
       snap: typeof safe.settings?.snap === 'boolean' ? safe.settings.snap : state.settings.snap,
       ortho: typeof safe.settings?.ortho === 'boolean' ? safe.settings.ortho : state.settings.ortho,
       trackWidth: Number(safe.settings?.trackWidth) || state.settings.trackWidth,
       trackLevel: normalizeTrackLevel(safe.settings?.trackLevel),
+      trackGradient: normalizeTrackGradient(safe.settings?.trackGradient),
       trackLineType: normalizeTrackLineType(safe.settings?.trackLineType),
       trackColor: normalizeTrackColor(safe.settings?.trackColor),
-      minTrackLength: migratedMinTrackLength
+      minTrackLength: migratedMinTrackLength,
+      viaductSpan: clamp(Number(safe.settings?.viaductSpan) || state.settings.viaductSpan, 4, 80),
+      viaductWallAction: safe.settings?.viaductWallAction === 'erase' ? 'erase' : 'draw',
+      viaductAreaMode: safe.settings?.viaductAreaMode === 'erase' ? 'erase' : 'paint',
+      viaductAreaShape: 'poly',
+      viaductEditMode: safe.settings?.viaductEditMode === 'area' ? 'area' : 'wall'
     },
     view: {
       zoom: clamp(Number(safe.view?.zoom) || state.view.zoom, state.view.minZoom, state.view.maxZoom),
@@ -327,6 +534,8 @@ function applyLoadedState(data) {
   const next = sanitizeLoadedState(data);
 
   state.tracks = clone(next.tracks);
+  state.viaductWalls = clone(next.viaductWalls);
+  state.viaductAreas = clone(next.viaductAreas);
   state.platforms = clone(next.platforms);
   state.trains = clone(next.trains);
 
@@ -335,9 +544,15 @@ function applyLoadedState(data) {
   state.settings.ortho = next.settings.ortho;
   state.settings.trackWidth = clamp(next.settings.trackWidth, 1, 8);
   state.settings.trackLevel = next.settings.trackLevel;
+  state.settings.trackGradient = next.settings.trackGradient;
   state.settings.trackLineType = next.settings.trackLineType;
   state.settings.trackColor = next.settings.trackColor;
   state.settings.minTrackLength = clamp(next.settings.minTrackLength, 1, 20);
+  state.settings.viaductSpan = clamp(next.settings.viaductSpan, 4, 80);
+  state.settings.viaductWallAction = next.settings.viaductWallAction;
+  state.settings.viaductAreaMode = next.settings.viaductAreaMode;
+  state.settings.viaductAreaShape = next.settings.viaductAreaShape;
+  state.settings.viaductEditMode = next.settings.viaductEditMode;
 
   state.view.zoom = next.view.zoom;
   if (Number.isFinite(next.view.offsetX) && Number.isFinite(next.view.offsetY)) {
@@ -351,6 +566,12 @@ function applyLoadedState(data) {
   state.lastDragWorld = null;
   state.mousePreview = null;
   state.draftingTrackStart = null;
+  state.draftingTrackStartLevel = null;
+  state.draftingViaductStart = null;
+  state.draftingViaductCurrent = null;
+  state.draftingViaductAreaStart = null;
+  state.draftingViaductAreaCurrent = null;
+  state.draftingViaductAreaPoints = [];
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
 
@@ -359,7 +580,18 @@ function applyLoadedState(data) {
   orthoToggle.checked = state.settings.ortho;
   trackWidthRange.value = String(Math.round(state.settings.trackWidth));
   minTrackLenRange.value = String(state.settings.minTrackLength);
+  if (viaductSpanRange) {
+    viaductSpanRange.value = String(Math.round(state.settings.viaductSpan));
+  }
+  if (trackGradientSelect) {
+    trackGradientSelect.value = String(state.settings.trackGradient);
+  }
+  syncViaductActionButtons();
+  if (viaductAreaShapeSelect) {
+    viaductAreaShapeSelect.value = state.settings.viaductAreaShape;
+  }
 
+  mergeViaductAreaRectangles();
   refreshSettingLabels();
   commitHistory();
   render();
@@ -449,6 +681,12 @@ function loadDiagramFromFile(file, options = {}) {
 
 function resetDraftingState() {
   state.draftingTrackStart = null;
+  state.draftingTrackStartLevel = null;
+  state.draftingViaductStart = null;
+  state.draftingViaductCurrent = null;
+  state.draftingViaductAreaStart = null;
+  state.draftingViaductAreaCurrent = null;
+  state.draftingViaductAreaPoints = [];
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
   state.draggingSelection = false;
@@ -465,6 +703,8 @@ function resetViewToDefault() {
 
 function clearAllData() {
   state.tracks = [];
+  state.viaductWalls = [];
+  state.viaductAreas = [];
   state.platforms = [];
   state.trains = [];
   state.selection = null;
@@ -477,9 +717,15 @@ function resetEditorSettings() {
   state.settings.ortho = false;
   state.settings.trackWidth = 2;
   state.settings.trackLevel = 0;
+  state.settings.trackGradient = 0;
   state.settings.trackLineType = 'solid';
   state.settings.trackColor = '#25698a';
   state.settings.minTrackLength = 1;
+  state.settings.viaductSpan = 24;
+  state.settings.viaductWallAction = 'draw';
+  state.settings.viaductAreaMode = 'paint';
+  state.settings.viaductAreaShape = 'poly';
+  state.settings.viaductEditMode = 'wall';
 
   if (gridSizeSelect) {
     gridSizeSelect.value = '1';
@@ -496,6 +742,9 @@ function resetEditorSettings() {
   if (trackLevelInput) {
     trackLevelInput.value = '0';
   }
+  if (trackGradientSelect) {
+    trackGradientSelect.value = '0';
+  }
   if (trackLineTypeSelect) {
     trackLineTypeSelect.value = 'solid';
   }
@@ -504,6 +753,13 @@ function resetEditorSettings() {
   }
   if (minTrackLenRange) {
     minTrackLenRange.value = '1';
+  }
+  if (viaductSpanRange) {
+    viaductSpanRange.value = '24';
+  }
+  syncViaductActionButtons();
+  if (viaductAreaShapeSelect) {
+    viaductAreaShapeSelect.value = 'poly';
   }
 }
 
@@ -559,6 +815,20 @@ function startNewGame() {
   commitHistory();
   refreshSettingLabels();
   hideTitleAndEnterEditor();
+}
+
+function syncViaductActionButtons() {
+  if (viaductWallActionDrawBtn && viaductWallActionEraseBtn) {
+    const drawActive = state.settings.viaductWallAction !== 'erase';
+    viaductWallActionDrawBtn.classList.toggle('active', drawActive);
+    viaductWallActionEraseBtn.classList.toggle('active', !drawActive);
+  }
+
+  if (viaductAreaModePaintBtn && viaductAreaModeEraseBtn) {
+    const paintActive = state.settings.viaductAreaMode !== 'erase';
+    viaductAreaModePaintBtn.classList.toggle('active', paintActive);
+    viaductAreaModeEraseBtn.classList.toggle('active', !paintActive);
+  }
 }
 
 function isTitleVisible() {
@@ -653,9 +923,29 @@ function applyTrackConstraint(point, startPoint = null) {
   return { x: startPoint.x, y: snapped.y };
 }
 
+function resolveViaductAreaPoint(rawPoint) {
+  if (state.settings.viaductAreaShape === 'poly') {
+    return quantizePoint(rawPoint);
+  }
+  return applyTrackConstraint(rawPoint, state.draftingViaductAreaStart);
+}
+
 function setMode(mode) {
+  if (mode === 'viaduct') {
+    state.settings.viaductEditMode = 'wall';
+  }
+  if (mode === 'viaduct-area') {
+    state.settings.viaductEditMode = 'area';
+  }
+
   state.mode = mode;
   state.draftingTrackStart = null;
+  state.draftingTrackStartLevel = null;
+  state.draftingViaductStart = null;
+  state.draftingViaductCurrent = null;
+  state.draftingViaductAreaStart = null;
+  state.draftingViaductAreaCurrent = null;
+  state.draftingViaductAreaPoints = [];
   state.draftingPlatformStart = null;
   state.draftingPlatformCurrent = null;
   state.draggingSelection = false;
@@ -663,19 +953,114 @@ function setMode(mode) {
   state.lastDragWorld = null;
 
   for (const btn of modeButtons) {
-    btn.classList.toggle('active', btn.dataset.mode === mode);
+    const isViaductFamily = mode === 'viaduct' || mode === 'viaduct-area';
+    const active = btn.dataset.mode === mode || (btn.dataset.mode === 'viaduct' && isViaductFamily);
+    btn.classList.toggle('active', active);
   }
 
   const hints = {
-    select: 'Select: クリックで選択 / ドラッグで移動 / Deleteで削除',
-    track: 'Track: 2クリックで敷設 / Altで吸着一時OFF / Wheel: Zoom / 右ドラッグ: Pan',
-    platform: 'Platform: 2クリックで敷設（連続入力可） / Escで終了',
-    train: 'Train: 線路近くをクリックして先頭車を配置',
-    car: 'Add Car: 列車をクリックして車両を追加',
-    erase: 'Erase: クリックした要素を削除'
+    select: '選択: クリックで選択、ドラッグで移動、Deleteで削除',
+    track: '線路: 始点クリック → 終点クリックで敷設',
+    viaduct: '高架外側線: 2クリックで外側線を追加（同レベル同士で面が自動補助）',
+    'viaduct-area': '高架エリア: Paint/Eraseと形状を選び、範囲を確定',
+    platform: 'ホーム: 2クリックで敷設（終点から連続入力）',
+    train: '列車: 線路付近をクリックして配置',
+    car: '増結: 列車をクリックして車両追加',
+    erase: '削除: 対象をクリックして削除'
   };
   hint.textContent = hints[mode];
+  updateModeGuide(mode);
+  updateModeSettingVisibility(mode);
+  updateViaductEditSwitch(mode);
   render();
+}
+
+function updateViaductEditSwitch(mode) {
+  if (!viaductEditSwitch || !viaductWallEditBtn || !viaductAreaEditBtn) {
+    return;
+  }
+  const visible = mode === 'viaduct' || mode === 'viaduct-area';
+  viaductEditSwitch.hidden = !visible;
+  if (!visible) {
+    return;
+  }
+  viaductWallEditBtn.classList.toggle('active', mode === 'viaduct');
+  viaductAreaEditBtn.classList.toggle('active', mode === 'viaduct-area');
+}
+
+function getModeDisplayName(mode) {
+  const names = {
+    select: '選択',
+    track: '線路',
+    viaduct: '高架外側線',
+    'viaduct-area': '高架エリア',
+    platform: 'プラットホーム',
+    train: '列車',
+    car: '増結',
+    erase: '削除'
+  };
+  return names[mode] || mode;
+}
+
+function updateModeGuide(mode) {
+  if (modeLabel) {
+    modeLabel.textContent = `現在モード: ${getModeDisplayName(mode)}`;
+  }
+  if (!modeSteps) {
+    return;
+  }
+
+  const stepsMap = {
+    viaduct: [
+      `操作: ${state.settings.viaductWallAction === 'erase' ? '削除（選択→Delete）' : '追加（2クリック）'}`,
+      state.settings.viaductWallAction === 'erase' ? '外側線をクリックで選択' : '始点をクリック → 終点をクリックで確定',
+      state.settings.viaductWallAction === 'erase' ? 'Deleteキーで削除、Escで選択解除' : '続けてクリックで連続作図、Escで解除'
+    ],
+    'viaduct-area': [
+      `種別: ${state.settings.viaductAreaMode === 'erase' ? 'Erase(削除範囲)' : 'Paint(追加範囲)'}`,
+      '点をクリックして境界線を作図（3点以上）',
+      state.settings.viaductAreaMode === 'erase'
+        ? '始点クリック or Enterで確定（内包エリアを削除）、右クリック/Ctrl+Zで1頂点戻す'
+        : '始点クリック or Enterで確定（範囲を追加）、右クリック/Ctrl+Zで1頂点戻す'
+    ],
+    track: [
+      '始点クリック',
+      '終点クリックで確定',
+      'Altで一時スナップ解除'
+    ],
+    platform: [
+      '始点クリック',
+      '終点クリックで確定',
+      '終点から連続入力'
+    ],
+    select: [
+      '対象をクリックで選択',
+      'ドラッグで移動',
+      'Deleteで削除'
+    ]
+  };
+
+  const steps = stepsMap[mode] || ['操作対象をクリックして実行'];
+  modeSteps.innerHTML = '';
+  for (const line of steps) {
+    const li = document.createElement('li');
+    li.textContent = line;
+    modeSteps.appendChild(li);
+  }
+}
+
+function updateModeSettingVisibility(mode) {
+  for (const label of modeSettingGroups) {
+    const group = label.dataset.settingGroup;
+    let visible = true;
+    if (group === 'viaduct-wall') {
+      visible = mode === 'viaduct';
+    }
+    if (group === 'viaduct-area') {
+      visible = mode === 'viaduct-area';
+    }
+    label.classList.toggle('setting-hidden', !visible);
+  }
 }
 
 function distance(a, b) {
@@ -700,7 +1085,7 @@ function closestTrackProjection(p) {
   for (const seg of state.tracks) {
     const pr = nearestPointOnSegment(p, seg.a, seg.b);
     if (!best || pr.dist < best.dist) {
-      best = pr;
+      best = { ...pr, seg };
     }
   }
   return best;
@@ -710,6 +1095,10 @@ function endpointKey(p) {
   return `${p.x.toFixed(4)},${p.y.toFixed(4)}`;
 }
 
+function trackNodeKey(p, level) {
+  return `${endpointKey(p)}@${normalizeTrackLevel(level)}`;
+}
+
 function platformNodeKey(p) {
   const mergeStep = 0.3;
   const x = Math.round(p.x / mergeStep);
@@ -717,11 +1106,151 @@ function platformNodeKey(p) {
   return `${x},${y}`;
 }
 
+function getViaductWallNodes(level = getActiveTrackLevel()) {
+  const nodes = new Map();
+  const lv = normalizeTrackLevel(level);
+  for (const wall of state.viaductWalls) {
+    if (normalizeTrackLevel(wall.level) !== lv) {
+      continue;
+    }
+    nodes.set(endpointKey(wall.a), wall.a);
+    nodes.set(endpointKey(wall.b), wall.b);
+  }
+  return Array.from(nodes.values());
+}
+
+function findNearestViaductWallNode(point, snapStrength = 'normal', level = getActiveTrackLevel()) {
+  const nodes = getViaductWallNodes(level);
+  if (nodes.length === 0) {
+    return null;
+  }
+
+  const baseRadiusPx = snapStrength === 'light' ? 6 : 9;
+  const snapRadiusWorld = clamp(baseRadiusPx / Math.max(0.0001, state.view.zoom), 0.16, 0.6);
+  let best = null;
+  for (const node of nodes) {
+    const d = distance(point, node);
+    if (d <= snapRadiusWorld && (!best || d < best.dist)) {
+      best = { x: node.x, y: node.y, dist: d };
+    }
+  }
+  return best;
+}
+
+function findNearestViaductWallProjection(point, options = {}) {
+  const {
+    level = getActiveTrackLevel(),
+    allowAnyLevel = false,
+    snapRadiusPx = 7
+  } = options;
+  const lv = normalizeTrackLevel(level);
+  const snapRadius = clamp(snapRadiusPx / Math.max(0.0001, state.view.zoom), 0.2, 3.5);
+  let best = null;
+
+  for (let i = 0; i < state.viaductWalls.length; i += 1) {
+    const wall = state.viaductWalls[i];
+    const wallLevel = normalizeTrackLevel(wall.level);
+    if (!allowAnyLevel && wallLevel !== lv) {
+      continue;
+    }
+    const pr = nearestPointOnSegment(point, wall.a, wall.b);
+    if (pr.dist > snapRadius) {
+      continue;
+    }
+    const score = pr.dist + (allowAnyLevel && wallLevel !== lv ? 0.02 : 0);
+    if (!best || score < best.score) {
+      best = { index: i, score, wallLevel, ...pr };
+    }
+  }
+
+  return best;
+}
+
+function findNearestTrackSideProjection(point, options = {}) {
+  const {
+    level = getActiveTrackLevel(),
+    allowAnyLevel = false,
+    snapRadiusPx = 22
+  } = options;
+
+  const lv = normalizeTrackLevel(level);
+  const snapRadius = clamp(snapRadiusPx / Math.max(0.0001, state.view.zoom), 0.2, 3.5);
+  let best = null;
+
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    const seg = state.tracks[i];
+    const tier = getTrackElevatedTier(seg);
+    if (tier < 1) {
+      continue;
+    }
+
+    const aLv = getTrackEndpointLevel(seg, 'a');
+    const bLv = getTrackEndpointLevel(seg, 'b');
+    const segTopLevel = Math.max(aLv, bLv);
+    if (!allowAnyLevel && segTopLevel !== lv) {
+      continue;
+    }
+
+    const dx = seg.b.x - seg.a.x;
+    const dy = seg.b.y - seg.a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+      continue;
+    }
+
+    const pr = nearestPointOnSegment(point, seg.a, seg.b);
+    const nx = -dy / len;
+    const ny = dx / len;
+    const signedPerp = (point.x - pr.x) * nx + (point.y - pr.y) * ny;
+    const offset = getTrackSideOffset(seg);
+
+    const consider = (side, enabled, targetOffset) => {
+      if (!enabled) {
+        return;
+      }
+      const dist = Math.abs(signedPerp - targetOffset);
+      if (dist > snapRadius) {
+        return;
+      }
+      const score = dist + (allowAnyLevel && segTopLevel !== lv ? 0.02 : 0);
+      if (!best || score < best.score) {
+        best = { type: 'track-side', index: i, side, score, dist };
+      }
+    };
+
+    consider('positive', seg.sideDisabledPositive !== true, offset);
+    consider('negative', seg.sideDisabledNegative !== true, -offset);
+  }
+
+  return best;
+}
+
+function resolveViaductWallPoint(rawPoint, startPoint, options = {}) {
+  const { enableNodeSnap = true, preferWallSnap = false } = options;
+  const constrained = applyTrackConstraint(rawPoint, startPoint);
+
+  if (enableNodeSnap) {
+    const nearNode = findNearestViaductWallNode(constrained, startPoint ? 'light' : 'normal');
+    if (nearNode && (!startPoint || distance(startPoint, nearNode) > 0.0001)) {
+      return { x: nearNode.x, y: nearNode.y };
+    }
+  }
+
+  if (preferWallSnap) {
+    const nearWall = findNearestViaductWallProjection(constrained, { level: getActiveTrackLevel(), allowAnyLevel: false, snapRadiusPx: 7 });
+    if (nearWall) {
+      return { x: nearWall.x, y: nearWall.y };
+    }
+  }
+
+  return constrained;
+}
+
 function collectTrackNodeCounts() {
   const counts = new Map();
   for (const seg of state.tracks) {
-    const ka = endpointKey(seg.a);
-    const kb = endpointKey(seg.b);
+    const ka = trackNodeKey(seg.a, getTrackEndpointLevel(seg, 'a'));
+    const kb = trackNodeKey(seg.b, getTrackEndpointLevel(seg, 'b'));
     counts.set(ka, (counts.get(ka) || 0) + 1);
     counts.set(kb, (counts.get(kb) || 0) + 1);
   }
@@ -803,7 +1332,882 @@ function normalizeTrackLevel(value) {
   if (Number.isNaN(n)) {
     return 0;
   }
-  return Math.round(clamp(n, -9, 9));
+  return Math.round(clamp(n, -TRACK_MAX_LEVEL, TRACK_MAX_LEVEL));
+}
+
+function normalizeTrackGradient(value) {
+  const n = Number(value);
+  if (Number.isNaN(n)) {
+    return 0;
+  }
+  return Math.round(clamp(n, -TRACK_MAX_LEVEL, TRACK_MAX_LEVEL));
+}
+
+function getTrackEndpointLevel(seg, endpoint) {
+  const fallback = normalizeTrackLevel(seg.level);
+  if (endpoint === 'a') {
+    return normalizeTrackLevel(seg.levelStart ?? fallback);
+  }
+  return normalizeTrackLevel(seg.levelEnd ?? fallback);
+}
+
+function getTrackLevelAt(seg, t) {
+  const ta = clamp(Number(t) || 0, 0, 1);
+  const la = getTrackEndpointLevel(seg, 'a');
+  const lb = getTrackEndpointLevel(seg, 'b');
+  return la + (lb - la) * ta;
+}
+
+function getTrackElevatedTier(seg) {
+  const la = getTrackEndpointLevel(seg, 'a');
+  const lb = getTrackEndpointLevel(seg, 'b');
+  return Math.max(0, Math.min(TRACK_MAX_LEVEL, Math.floor(Math.max(la, lb))));
+}
+
+function getTrackSideOffset(seg) {
+  const tier = getTrackElevatedTier(seg);
+  if (tier < 1) {
+    return 0;
+  }
+  return TRACK_SIDE_OFFSET_DOT;
+}
+
+function getTrackAlignedLevelProfile(seg, alignedForward = true) {
+  const aLv = getTrackEndpointLevel(seg, 'a');
+  const bLv = getTrackEndpointLevel(seg, 'b');
+  if (alignedForward) {
+    return { start: aLv, end: bLv };
+  }
+  return { start: bLv, end: aLv };
+}
+
+function buildSideRailSuppressionMap() {
+  const map = new Map();
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    const seg = state.tracks[i];
+    map.set(i, {
+      skipPositiveSide: seg?.sideDisabledPositive === true,
+      skipNegativeSide: seg?.sideDisabledNegative === true
+    });
+  }
+
+  const overlapTol = clamp(1.1 / Math.max(0.0001, state.view.zoom), 0.08, 0.4);
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    const segA = state.tracks[i];
+    const tierA = getTrackElevatedTier(segA);
+    if (tierA < 1) {
+      continue;
+    }
+
+    const dxA = segA.b.x - segA.a.x;
+    const dyA = segA.b.y - segA.a.y;
+    const lenA = Math.hypot(dxA, dyA);
+    if (lenA < 1e-6) {
+      continue;
+    }
+    const uxA = dxA / lenA;
+    const uyA = dyA / lenA;
+    const nxA = -uyA;
+    const nyA = uxA;
+    const offA = getTrackSideOffset(segA);
+
+    for (let j = i + 1; j < state.tracks.length; j += 1) {
+      const segB = state.tracks[j];
+      const tierB = getTrackElevatedTier(segB);
+      if (tierB < 1) {
+        continue;
+      }
+
+      const dxB = segB.b.x - segB.a.x;
+      const dyB = segB.b.y - segB.a.y;
+      const lenB = Math.hypot(dxB, dyB);
+      if (lenB < 1e-6) {
+        continue;
+      }
+
+      const cross = Math.abs(dxA * dyB - dyA * dxB) / (lenA * lenB);
+      if (cross > 0.03) {
+        continue;
+      }
+
+      const dot = (dxA * dxB + dyA * dyB) / (lenA * lenB);
+      const profileA = getTrackAlignedLevelProfile(segA, true);
+      const profileB = getTrackAlignedLevelProfile(segB, dot >= 0);
+      if (Math.abs(profileA.start - profileB.start) > 0.01 || Math.abs(profileA.end - profileB.end) > 0.01) {
+        continue;
+      }
+
+      const bx0 = (segB.a.x - segA.a.x) * uxA + (segB.a.y - segA.a.y) * uyA;
+      const bx1 = (segB.b.x - segA.a.x) * uxA + (segB.b.y - segA.a.y) * uyA;
+      const bMin = Math.min(bx0, bx1);
+      const bMax = Math.max(bx0, bx1);
+      const overlapStart = Math.max(0, bMin);
+      const overlapEnd = Math.min(lenA, bMax);
+      if (overlapEnd - overlapStart < 2) {
+        continue;
+      }
+
+      const mid = (overlapStart + overlapEnd) / 2;
+      const pA = { x: segA.a.x + uxA * mid, y: segA.a.y + uyA * mid };
+      const prB = nearestPointOnSegment(pA, segB.a, segB.b);
+      const dpx = prB.x - pA.x;
+      const dpy = prB.y - pA.y;
+      const signedPerp = dpx * nxA + dpy * nyA;
+
+      const offB = getTrackSideOffset(segB);
+      const expected = offA + offB;
+      if (Math.abs(Math.abs(signedPerp) - expected) > overlapTol) {
+        continue;
+      }
+
+      const flagsA = map.get(i);
+      const flagsB = map.get(j);
+      if (signedPerp >= 0) {
+        flagsA.skipPositiveSide = true;
+        flagsB.skipNegativeSide = true;
+      } else {
+        flagsA.skipNegativeSide = true;
+        flagsB.skipPositiveSide = true;
+      }
+    }
+  }
+
+  return map;
+}
+
+function buildViaductAreaPairs() {
+  const pairs = [];
+  const used = new Set();
+  const spanLimit = clamp(Number(state.settings.viaductSpan) || 24, 4, 80);
+
+  for (let i = 0; i < state.viaductWalls.length; i += 1) {
+    if (used.has(i)) {
+      continue;
+    }
+
+    const a = state.viaductWalls[i];
+    const adx = a.b.x - a.a.x;
+    const ady = a.b.y - a.a.y;
+    const alen = Math.hypot(adx, ady);
+    if (alen < 0.8) {
+      continue;
+    }
+
+    const aux = adx / alen;
+    const auy = ady / alen;
+    const anx = -auy;
+    const any = aux;
+
+    let best = null;
+    for (let j = i + 1; j < state.viaductWalls.length; j += 1) {
+      if (used.has(j)) {
+        continue;
+      }
+      const b = state.viaductWalls[j];
+      if (normalizeTrackLevel(a.level) !== normalizeTrackLevel(b.level)) {
+        continue;
+      }
+
+      const bdx = b.b.x - b.a.x;
+      const bdy = b.b.y - b.a.y;
+      const blen = Math.hypot(bdx, bdy);
+      if (blen < 0.8) {
+        continue;
+      }
+
+      const cross = Math.abs(adx * bdy - ady * bdx) / (alen * blen);
+      if (cross > 0.08) {
+        continue;
+      }
+
+      const sa0 = 0;
+      const sa1 = alen;
+      const sb0 = (b.a.x - a.a.x) * aux + (b.a.y - a.a.y) * auy;
+      const sb1 = (b.b.x - a.a.x) * aux + (b.b.y - a.a.y) * auy;
+      const overlapStart = Math.max(sa0, Math.min(sb0, sb1));
+      const overlapEnd = Math.min(sa1, Math.max(sb0, sb1));
+      if (overlapEnd - overlapStart < 1.2) {
+        continue;
+      }
+
+      const mid = (overlapStart + overlapEnd) / 2;
+      const pa = { x: a.a.x + aux * mid, y: a.a.y + auy * mid };
+      const pr = nearestPointOnSegment(pa, b.a, b.b);
+      const dist = Math.hypot(pr.x - pa.x, pr.y - pa.y);
+      if (dist > spanLimit) {
+        continue;
+      }
+
+      if (!best || dist < best.dist) {
+        best = { j, overlapStart, overlapEnd, dist, prAtoBMid: pr, aux, auy, alen };
+      }
+    }
+
+    if (!best) {
+      continue;
+    }
+
+    const b = state.viaductWalls[best.j];
+    const sb0 = (b.a.x - a.a.x) * best.aux + (b.a.y - a.a.y) * best.auy;
+    const sb1 = (b.b.x - a.a.x) * best.aux + (b.b.y - a.a.y) * best.auy;
+    const denom = sb1 - sb0;
+    if (Math.abs(denom) < 1e-6) {
+      continue;
+    }
+    const u0 = (best.overlapStart - sb0) / denom;
+    const u1 = (best.overlapEnd - sb0) / denom;
+
+    const a0 = { x: a.a.x + best.aux * best.overlapStart, y: a.a.y + best.auy * best.overlapStart };
+    const a1 = { x: a.a.x + best.aux * best.overlapEnd, y: a.a.y + best.auy * best.overlapEnd };
+    const b0 = { x: b.a.x + (b.b.x - b.a.x) * u0, y: b.a.y + (b.b.y - b.a.y) * u0 };
+    const b1 = { x: b.a.x + (b.b.x - b.a.x) * u1, y: b.a.y + (b.b.y - b.a.y) * u1 };
+
+    pairs.push({
+      i,
+      j: best.j,
+      level: normalizeTrackLevel(a.level),
+      polygon: [a0, a1, b1, b0]
+    });
+    used.add(i);
+    used.add(best.j);
+  }
+
+  return pairs;
+}
+
+function drawViaductAreas() {
+  if (state.mode !== 'viaduct-area') {
+    return;
+  }
+
+  const activeLevel = getActiveTrackLevel();
+  const showAreaLevel = activeLevel > 0;
+  const activeAreas = [];
+
+  if (state.viaductAreas && state.viaductAreas.length > 0) {
+    for (const area of state.viaductAreas) {
+      const poly = normalizeAreaPoints(area);
+      if (poly.length < 3) {
+        continue;
+      }
+      const areaLevel = normalizeTrackLevel(area.level);
+      if (!showAreaLevel || areaLevel !== activeLevel) {
+        continue;
+      }
+      activeAreas.push(poly);
+    }
+  }
+
+  if (activeAreas.length > 0) {
+    ctx.fillStyle = 'rgba(234, 206, 74, 0.34)';
+    ctx.beginPath();
+    for (const poly of activeAreas) {
+      ctx.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i += 1) {
+        ctx.lineTo(poly[i].x, poly[i].y);
+      }
+      ctx.closePath();
+    }
+    ctx.fill();
+  }
+
+  if (!state.viaductWalls || state.viaductWalls.length < 2) {
+    // continue to preview rectangle below
+  } else {
+    const pairs = buildViaductAreaPairs();
+    for (const pair of pairs) {
+      const pairLevel = normalizeTrackLevel(pair.level);
+      if (!showAreaLevel || pairLevel !== activeLevel) {
+        continue;
+      }
+
+      ctx.fillStyle = 'rgba(234, 206, 74, 0.2)';
+      ctx.beginPath();
+      ctx.moveTo(pair.polygon[0].x, pair.polygon[0].y);
+      for (let i = 1; i < pair.polygon.length; i += 1) {
+        ctx.lineTo(pair.polygon[i].x, pair.polygon[i].y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(176, 148, 28, 0.66)';
+      ctx.lineWidth = clamp(0.85 / Math.max(0.0001, state.view.zoom), 0.06, 0.18);
+      ctx.setLineDash([0.34, 0.26]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  if (state.mode === 'viaduct-area') {
+    const isErase = state.settings.viaductAreaMode === 'erase';
+    const fill = isErase ? 'rgba(181, 60, 60, 0.22)' : 'rgba(55, 122, 184, 0.2)';
+    const stroke = isErase ? 'rgba(176, 38, 38, 0.9)' : 'rgba(19, 102, 172, 0.92)';
+    ctx.lineWidth = clamp(1.1 / Math.max(0.0001, state.view.zoom), 0.08, 0.26);
+    ctx.setLineDash([0.5, 0.35]);
+
+    if (state.settings.viaductAreaShape === 'rect' && state.draftingViaductAreaStart && state.draftingViaductAreaCurrent) {
+      const a = state.draftingViaductAreaStart;
+      const b = state.draftingViaductAreaCurrent;
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      const w = Math.abs(b.x - a.x);
+      const h = Math.abs(b.y - a.y);
+      ctx.fillStyle = fill;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = stroke;
+      ctx.strokeRect(x, y, w, h);
+    }
+
+    if (state.settings.viaductAreaShape === 'poly' && state.draftingViaductAreaPoints.length > 0) {
+      const points = [...state.draftingViaductAreaPoints];
+      if (state.draftingViaductAreaCurrent) {
+        points.push(state.draftingViaductAreaCurrent);
+      }
+      if (points.length >= 2) {
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = stroke;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i += 1) {
+          ctx.lineTo(points[i].x, points[i].y);
+        }
+        if (points.length >= 3) {
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.stroke();
+      }
+    }
+
+    ctx.setLineDash([]);
+
+    if (state.mousePreview) {
+      drawCursorMarker(state.mousePreview, {
+        hasStart: Boolean(state.draftingViaductAreaStart) || state.draftingViaductAreaPoints.length > 0,
+        strokeIdle: isErase ? 'rgba(170, 58, 58, 0.95)' : 'rgba(24, 112, 175, 0.95)',
+        strokeActive: isErase ? 'rgba(188, 72, 72, 0.96)' : 'rgba(36, 133, 199, 0.96)',
+        fillIdle: isErase ? 'rgba(216, 124, 124, 0.9)' : 'rgba(76, 155, 212, 0.9)',
+        fillActive: isErase ? 'rgba(230, 142, 142, 0.92)' : 'rgba(94, 174, 230, 0.92)',
+        baseRadius: 0.64,
+        activeRadius: 0.58,
+        innerIdle: 0.2,
+        innerActive: 0.17,
+        lineScale: 1.5,
+        lineMin: 0.14,
+        lineMax: 0.46
+      });
+    }
+  }
+}
+
+function normalizeAreaPoints(area) {
+  if (area && Array.isArray(area.points) && area.points.length >= 3) {
+    return area.points.map((p) => ({ x: p.x, y: p.y }));
+  }
+  if (area && area.a && area.b) {
+    const rect = buildNormalizedRect(area.a, area.b);
+    return [
+      { x: rect.x1, y: rect.y1 },
+      { x: rect.x2, y: rect.y1 },
+      { x: rect.x2, y: rect.y2 },
+      { x: rect.x1, y: rect.y2 }
+    ];
+  }
+  return [];
+}
+
+function polygonBounds(points) {
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (const p of points) {
+    x1 = Math.min(x1, p.x);
+    y1 = Math.min(y1, p.y);
+    x2 = Math.max(x2, p.x);
+    y2 = Math.max(y2, p.y);
+  }
+  return { x1, y1, x2, y2 };
+}
+
+function polygonCentroid(points) {
+  let sx = 0;
+  let sy = 0;
+  for (const p of points) {
+    sx += p.x;
+    sy += p.y;
+  }
+  return { x: sx / points.length, y: sy / points.length };
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    const intersects = ((yi > point.y) !== (yj > point.y))
+      && (point.x < ((xj - xi) * (point.y - yi)) / ((yj - yi) || 1e-9) + xi);
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function segmentsIntersect(a1, a2, b1, b2) {
+  const ccw = (p1, p2, p3) => (p3.y - p1.y) * (p2.x - p1.x) > (p2.y - p1.y) * (p3.x - p1.x);
+  return ccw(a1, b1, b2) !== ccw(a2, b1, b2) && ccw(a1, a2, b1) !== ccw(a1, a2, b2);
+}
+
+function polygonsOverlap(polyA, polyB) {
+  const ba = polygonBounds(polyA);
+  const bb = polygonBounds(polyB);
+  if (ba.x2 < bb.x1 || bb.x2 < ba.x1 || ba.y2 < bb.y1 || bb.y2 < ba.y1) {
+    return false;
+  }
+
+  for (const p of polyA) {
+    if (pointInPolygon(p, polyB)) {
+      return true;
+    }
+  }
+  for (const p of polyB) {
+    if (pointInPolygon(p, polyA)) {
+      return true;
+    }
+  }
+
+  for (let i = 0; i < polyA.length; i += 1) {
+    const a1 = polyA[i];
+    const a2 = polyA[(i + 1) % polyA.length];
+    for (let j = 0; j < polyB.length; j += 1) {
+      const b1 = polyB[j];
+      const b2 = polyB[(j + 1) % polyB.length];
+      if (segmentsIntersect(a1, a2, b1, b2)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function getRectFromAxisAlignedPolygon(points) {
+  if (!Array.isArray(points) || points.length !== 4) {
+    return null;
+  }
+  const b = polygonBounds(points);
+  const tol = 1e-5;
+  for (const p of points) {
+    const onX = Math.abs(p.x - b.x1) < tol || Math.abs(p.x - b.x2) < tol;
+    const onY = Math.abs(p.y - b.y1) < tol || Math.abs(p.y - b.y2) < tol;
+    if (!onX || !onY) {
+      return null;
+    }
+  }
+  if (rectArea(b) < 0.02) {
+    return null;
+  }
+  return b;
+}
+
+function rectToPolygon(rect) {
+  return [
+    { x: rect.x1, y: rect.y1 },
+    { x: rect.x2, y: rect.y1 },
+    { x: rect.x2, y: rect.y2 },
+    { x: rect.x1, y: rect.y2 }
+  ];
+}
+
+function tryMergeRects(a, b) {
+  const tol = 1e-6;
+  const sameY = Math.abs(a.y1 - b.y1) < tol && Math.abs(a.y2 - b.y2) < tol;
+  const sameX = Math.abs(a.x1 - b.x1) < tol && Math.abs(a.x2 - b.x2) < tol;
+  if (sameY) {
+    const overlap = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+    if (overlap >= -tol) {
+      return { x1: Math.min(a.x1, b.x1), y1: a.y1, x2: Math.max(a.x2, b.x2), y2: a.y2 };
+    }
+  }
+  if (sameX) {
+    const overlap = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+    if (overlap >= -tol) {
+      return { x1: a.x1, y1: Math.min(a.y1, b.y1), x2: a.x2, y2: Math.max(a.y2, b.y2) };
+    }
+  }
+  return null;
+}
+
+function mergeViaductAreaRectangles() {
+  const grouped = new Map();
+  const others = [];
+  for (const area of state.viaductAreas) {
+    const lv = normalizeTrackLevel(area.level);
+    const rect = getRectFromAxisAlignedPolygon(normalizeAreaPoints(area));
+    if (!rect) {
+      others.push({ level: lv, points: normalizeAreaPoints(area) });
+      continue;
+    }
+    if (!grouped.has(lv)) {
+      grouped.set(lv, []);
+    }
+    grouped.get(lv).push(rect);
+  }
+
+  const mergedAreas = [...others];
+  for (const [level, rects] of grouped.entries()) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < rects.length && !changed; i += 1) {
+        for (let j = i + 1; j < rects.length; j += 1) {
+          const merged = tryMergeRects(rects[i], rects[j]);
+          if (merged) {
+            rects.splice(j, 1);
+            rects[i] = merged;
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+    for (const rect of rects) {
+      mergedAreas.push({ level, points: rectToPolygon(rect) });
+    }
+  }
+
+  state.viaductAreas = cleanupViaductAreas(mergedAreas);
+}
+
+function pointInPolygonOrEdge(point, polygon) {
+  const tol = 1e-6;
+  for (let i = 0; i < polygon.length; i += 1) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const apx = point.x - a.x;
+    const apy = point.y - a.y;
+    const cross = Math.abs(abx * apy - aby * apx);
+    const dot = apx * abx + apy * aby;
+    const len2 = abx * abx + aby * aby;
+    if (cross <= tol && dot >= -tol && dot <= len2 + tol) {
+      return true;
+    }
+  }
+  return pointInPolygon(point, polygon);
+}
+
+function polygonSignature(points) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return '';
+  }
+  const encoded = points.map((p) => `${Number(p.x).toFixed(4)},${Number(p.y).toFixed(4)}`);
+  const n = encoded.length;
+  let best = null;
+
+  for (let start = 0; start < n; start += 1) {
+    const seq = [];
+    for (let k = 0; k < n; k += 1) {
+      seq.push(encoded[(start + k) % n]);
+    }
+    const key = seq.join('|');
+    if (!best || key < best) {
+      best = key;
+    }
+  }
+
+  for (let start = 0; start < n; start += 1) {
+    const seq = [];
+    for (let k = 0; k < n; k += 1) {
+      seq.push(encoded[(start - k + n * 10) % n]);
+    }
+    const key = seq.join('|');
+    if (!best || key < best) {
+      best = key;
+    }
+  }
+
+  return best;
+}
+
+function isPolygonContained(inner, outer) {
+  if (!inner || !outer || inner.length < 3 || outer.length < 3) {
+    return false;
+  }
+  for (const p of inner) {
+    if (!pointInPolygonOrEdge(p, outer)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function cleanupViaductAreas(areas) {
+  const normalized = (areas || [])
+    .map((area) => ({
+      level: normalizeTrackLevel(area.level),
+      points: normalizeAreaPoints(area)
+    }))
+    .filter((area) => area.points.length >= 3);
+
+  const deduped = [];
+  const seen = new Set();
+  for (const area of normalized) {
+    const key = `${area.level}|${polygonSignature(area.points)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(area);
+  }
+
+  const keep = new Array(deduped.length).fill(true);
+  for (let i = 0; i < deduped.length; i += 1) {
+    if (!keep[i]) {
+      continue;
+    }
+    const ai = deduped[i];
+    const areaI = Math.abs(polygonArea(ai.points));
+    for (let j = 0; j < deduped.length; j += 1) {
+      if (i === j || !keep[j]) {
+        continue;
+      }
+      const aj = deduped[j];
+      if (ai.level !== aj.level) {
+        continue;
+      }
+      const areaJ = Math.abs(polygonArea(aj.points));
+      if (areaI > areaJ + 1e-6) {
+        continue;
+      }
+      if (isPolygonContained(ai.points, aj.points)) {
+        keep[i] = false;
+        break;
+      }
+    }
+  }
+
+  return deduped.filter((_, index) => keep[index]);
+}
+
+function buildNormalizedRect(a, b) {
+  return {
+    x1: Math.min(a.x, b.x),
+    y1: Math.min(a.y, b.y),
+    x2: Math.max(a.x, b.x),
+    y2: Math.max(a.y, b.y)
+  };
+}
+
+function rectArea(rect) {
+  return Math.max(0, rect.x2 - rect.x1) * Math.max(0, rect.y2 - rect.y1);
+}
+
+function subtractRectFromRect(src, cut) {
+  const ix1 = Math.max(src.x1, cut.x1);
+  const iy1 = Math.max(src.y1, cut.y1);
+  const ix2 = Math.min(src.x2, cut.x2);
+  const iy2 = Math.min(src.y2, cut.y2);
+  if (ix1 >= ix2 || iy1 >= iy2) {
+    return [src];
+  }
+
+  const parts = [];
+  if (src.y1 < iy1) {
+    parts.push({ x1: src.x1, y1: src.y1, x2: src.x2, y2: iy1 });
+  }
+  if (iy2 < src.y2) {
+    parts.push({ x1: src.x1, y1: iy2, x2: src.x2, y2: src.y2 });
+  }
+  if (src.x1 < ix1) {
+    parts.push({ x1: src.x1, y1: iy1, x2: ix1, y2: iy2 });
+  }
+  if (ix2 < src.x2) {
+    parts.push({ x1: ix2, y1: iy1, x2: src.x2, y2: iy2 });
+  }
+
+  return parts.filter((r) => rectArea(r) > 0.02);
+}
+
+function applyViaductAreaRect(start, end) {
+  const rect = buildNormalizedRect(start, end);
+  if (rectArea(rect) < 0.6) {
+    return false;
+  }
+
+  const level = getActiveTrackLevel();
+  const eraserPoly = rectToPolygon(rect);
+  if (state.settings.viaductAreaMode === 'paint') {
+    state.viaductAreas.push({
+      level,
+      points: rectToPolygon(rect)
+    });
+    mergeViaductAreaRectangles();
+    return true;
+  }
+
+  let changed = false;
+  const nextAreas = [];
+  for (const area of state.viaductAreas) {
+    const areaLevel = normalizeTrackLevel(area.level);
+    const poly = normalizeAreaPoints(area);
+    if (areaLevel !== level) {
+      nextAreas.push(area);
+      continue;
+    }
+
+    const srcRect = getRectFromAxisAlignedPolygon(poly);
+    if (srcRect) {
+      const pieces = subtractRectFromRect(srcRect, rect);
+      if (pieces.length !== 1 || pieces[0].x1 !== srcRect.x1 || pieces[0].y1 !== srcRect.y1 || pieces[0].x2 !== srcRect.x2 || pieces[0].y2 !== srcRect.y2) {
+        changed = true;
+      }
+      for (const p of pieces) {
+        nextAreas.push({ level, points: rectToPolygon(p) });
+      }
+      continue;
+    }
+
+    // For non-rect polygons, erase only when they are fully inside the erase range.
+    if (isPolygonContained(poly, eraserPoly)) {
+      changed = true;
+      continue;
+    }
+    nextAreas.push({ level: areaLevel, points: poly });
+  }
+  state.viaductAreas = nextAreas;
+  mergeViaductAreaRectangles();
+  return changed;
+}
+
+function applyViaductAreaPolygon(points) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return false;
+  }
+  const level = getActiveTrackLevel();
+  const poly = points.map((p) => ({ x: p.x, y: p.y }));
+
+  if (state.settings.viaductAreaMode === 'paint') {
+    state.viaductAreas.push({ level, points: poly });
+    mergeViaductAreaRectangles();
+    return true;
+  }
+
+  const next = [];
+  let changed = false;
+  for (const area of state.viaductAreas) {
+    const areaPoly = normalizeAreaPoints(area);
+    const areaLevel = normalizeTrackLevel(area.level);
+    if (areaLevel !== level) {
+      next.push({ level: areaLevel, points: areaPoly });
+      continue;
+    }
+
+    // Polygon erase behaves as range delete target: remove fully contained areas.
+    if (isPolygonContained(areaPoly, poly)) {
+      changed = true;
+      continue;
+    }
+    next.push({ level: areaLevel, points: areaPoly });
+  }
+  state.viaductAreas = next;
+  mergeViaductAreaRectangles();
+  return changed;
+}
+
+function drawViaductWalls() {
+  if (!state.viaductWalls) {
+    return;
+  }
+  const activeLevel = getActiveTrackLevel();
+  const wallWidth = clamp(1.1 / Math.max(0.0001, state.view.zoom), 0.09, 0.28);
+
+  ctx.strokeStyle = 'rgba(20, 20, 20, 0.95)';
+  ctx.lineWidth = wallWidth;
+  ctx.lineCap = 'round';
+  ctx.setLineDash([]);
+  for (const wall of state.viaductWalls) {
+    const alpha = normalizeTrackLevel(wall.level) === activeLevel ? 1 : 0.22;
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(wall.a.x, wall.a.y);
+    ctx.lineTo(wall.b.x, wall.b.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  if (state.mode === 'viaduct' && state.draftingViaductStart && state.draftingViaductCurrent) {
+    ctx.strokeStyle = 'rgba(16, 16, 16, 0.8)';
+    ctx.lineWidth = wallWidth;
+    ctx.setLineDash([0.3, 0.25]);
+    ctx.beginPath();
+    ctx.moveTo(state.draftingViaductStart.x, state.draftingViaductStart.y);
+    ctx.lineTo(state.draftingViaductCurrent.x, state.draftingViaductCurrent.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (state.selection && state.selection.type === 'viaduct') {
+    const wall = state.viaductWalls[state.selection.index];
+    if (wall) {
+      const selectLineWidth = Math.max(wallWidth + 0.14, 0.2);
+      const haloWidth = selectLineWidth + clamp(1.6 / Math.max(0.0001, state.view.zoom), 0.14, 0.52);
+
+      // Strong underlay so selected wall is obvious in erase mode.
+      ctx.strokeStyle = 'rgba(61, 173, 255, 0.34)';
+      ctx.lineWidth = haloWidth;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(wall.a.x, wall.a.y);
+      ctx.lineTo(wall.b.x, wall.b.y);
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(10, 130, 220, 0.95)';
+      ctx.lineWidth = selectLineWidth;
+      ctx.setLineDash([0.5, 0.35]);
+      ctx.beginPath();
+      ctx.moveTo(wall.a.x, wall.a.y);
+      ctx.lineTo(wall.b.x, wall.b.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const nodeRadius = clamp(2.8 / Math.max(0.0001, state.view.zoom), 0.18, 0.46);
+      ctx.fillStyle = 'rgba(20, 153, 245, 0.98)';
+      ctx.beginPath();
+      ctx.arc(wall.a.x, wall.a.y, nodeRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(wall.b.x, wall.b.y, nodeRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function getRequiredTrackLength(startLevel, endLevel) {
+  const baseMin = Math.max(1, Number(state.settings.minTrackLength) || 1);
+  if (normalizeTrackLevel(startLevel) !== normalizeTrackLevel(endLevel)) {
+    return Math.max(10, baseMin);
+  }
+  return baseMin;
+}
+
+function getActiveTrackLevel() {
+  return normalizeTrackLevel(state.settings.trackLevel);
+}
+
+function trackTouchesLevel(seg, level) {
+  const lv = normalizeTrackLevel(level);
+  const la = getTrackEndpointLevel(seg, 'a');
+  const lb = getTrackEndpointLevel(seg, 'b');
+  const minLv = Math.min(la, lb);
+  const maxLv = Math.max(la, lb);
+  return lv >= minLv && lv <= maxLv;
+}
+
+function getTrackLevelVisualAlpha(seg, level = getActiveTrackLevel()) {
+  return trackTouchesLevel(seg, level) ? 1 : 0.2;
 }
 
 function applyTrackLineStyle(seg) {
@@ -836,7 +2240,7 @@ function segmentIntersectionPoint(a1, a2, b1, b2) {
     return null;
   }
 
-  return { x: a1.x + t * r.x, y: a1.y + t * r.y };
+  return { x: a1.x + t * r.x, y: a1.y + t * r.y, t, u };
 }
 
 function drawSegmentSlice(seg, center, halfLength, lineWidth) {
@@ -865,41 +2269,282 @@ function drawSegmentSlice(seg, center, halfLength, lineWidth) {
   ctx.globalAlpha = 1;
 }
 
+function drawTrackSideLines(seg, halfLength = null, center = null, alphaMul = 1, options = {}) {
+  const { skipPositiveSide = false, skipNegativeSide = false, visibleRanges = null } = options;
+  const tier = getTrackElevatedTier(seg);
+  if (tier < 1) {
+    return;
+  }
+
+  const dx = seg.b.x - seg.a.x;
+  const dy = seg.b.y - seg.a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    return;
+  }
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const nx = -uy;
+  const ny = ux;
+  const offset = getTrackSideOffset(seg);
+  const sideLineWidth = clamp(1.15 / Math.max(0.0001, state.view.zoom), 0.09, 0.28);
+
+  const isInlineSegment = !center || !Number.isFinite(halfLength);
+  let segStartDist = 0;
+  let segEndDist = len;
+  if (!isInlineSegment) {
+    const sx = center.x - ux * halfLength;
+    const sy = center.y - uy * halfLength;
+    const ex = center.x + ux * halfLength;
+    const ey = center.y + uy * halfLength;
+    segStartDist = clamp((sx - seg.a.x) * ux + (sy - seg.a.y) * uy, 0, len);
+    segEndDist = clamp((ex - seg.a.x) * ux + (ey - seg.a.y) * uy, 0, len);
+    if (segEndDist < segStartDist) {
+      const tmp = segStartDist;
+      segStartDist = segEndDist;
+      segEndDist = tmp;
+    }
+  }
+
+  const drawOffsetRange = (startDist, endDist) => {
+    if (endDist - startDist <= 1e-6) {
+      return;
+    }
+    const sx = seg.a.x + ux * startDist;
+    const sy = seg.a.y + uy * startDist;
+    const ex = seg.a.x + ux * endDist;
+    const ey = seg.a.y + uy * endDist;
+
+    if (!skipPositiveSide) {
+      ctx.beginPath();
+      ctx.moveTo(sx + nx * offset, sy + ny * offset);
+      ctx.lineTo(ex + nx * offset, ey + ny * offset);
+      ctx.stroke();
+    }
+
+    if (!skipNegativeSide) {
+      ctx.beginPath();
+      ctx.moveTo(sx - nx * offset, sy - ny * offset);
+      ctx.lineTo(ex - nx * offset, ey - ny * offset);
+      ctx.stroke();
+    }
+  };
+
+  const drawVisibleOffsetRanges = (startDist, endDist) => {
+    if (!Array.isArray(visibleRanges)) {
+      drawOffsetRange(startDist, endDist);
+      return;
+    }
+    if (visibleRanges.length === 0) {
+      return;
+    }
+
+    for (const range of visibleRanges) {
+      const s = Math.max(startDist, Number(range.start));
+      const e = Math.min(endDist, Number(range.end));
+      if (e - s <= 1e-6) {
+        continue;
+      }
+      drawOffsetRange(s, e);
+    }
+  };
+
+  ctx.strokeStyle = TRACK_ELEVATED_SIDE_COLOR;
+  ctx.lineWidth = sideLineWidth;
+  ctx.lineCap = 'round';
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 0.88 * alphaMul;
+
+  const la = getTrackEndpointLevel(seg, 'a');
+  const lb = getTrackEndpointLevel(seg, 'b');
+  const isGradient = la !== lb;
+  if (!isInlineSegment) {
+    drawVisibleOffsetRanges(segStartDist, segEndDist);
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  if (isInlineSegment && isGradient && len >= 1.05) {
+    const lowerIsStart = la < lb;
+    const lowerLevel = lowerIsStart ? la : lb;
+    if (lowerLevel === 0) {
+      const noSideLen = Math.min(1, len);
+      if (lowerIsStart) {
+        drawVisibleOffsetRanges(noSideLen, len);
+      } else {
+        drawVisibleOffsetRanges(0, Math.max(0, len - noSideLen));
+      }
+
+      ctx.globalAlpha = 1;
+      return;
+    }
+  }
+
+  drawVisibleOffsetRanges(segStartDist, segEndDist);
+
+  ctx.globalAlpha = 1;
+}
+
 function drawLevelCrossingHints() {
   if (state.tracks.length < 2) {
     return;
   }
 
   const trackWorldWidth = getTrackWorldWidth();
-  const bridgeHalf = Math.max(trackWorldWidth * 1.08, 0.85);
+  const bridgeHalf = Math.max(trackWorldWidth * 1.15, 0.95);
 
   for (let i = 0; i < state.tracks.length; i += 1) {
     for (let j = i + 1; j < state.tracks.length; j += 1) {
       const segA = state.tracks[i];
       const segB = state.tracks[j];
-      const lvA = normalizeTrackLevel(segA.level);
-      const lvB = normalizeTrackLevel(segB.level);
-      if (lvA === lvB) {
-        continue;
-      }
-
       const p = segmentIntersectionPoint(segA.a, segA.b, segB.a, segB.b);
       if (!p) {
         continue;
       }
 
+      const lvA = getTrackLevelAt(segA, p.t);
+      const lvB = getTrackLevelAt(segB, p.u);
+      if (Math.abs(lvA - lvB) < 0.01) {
+        continue;
+      }
+
+      const upperLevel = lvA > lvB ? lvA : lvB;
+      if (!isPointInsideViaductArea(p, upperLevel)) {
+        continue;
+      }
+
       const upper = lvA > lvB ? segA : segB;
+      const lvDiff = Math.abs(lvA - lvB);
 
       ctx.fillStyle = PAPER_COLOR;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, trackWorldWidth * 0.72, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, trackWorldWidth * (0.76 + Math.min(0.34, lvDiff * 0.08)), 0, Math.PI * 2);
       ctx.fill();
 
       drawSegmentSlice(upper, p, bridgeHalf, trackWorldWidth);
+      drawTrackSideLines(upper, bridgeHalf, p, 1);
     }
   }
 
   ctx.setLineDash([]);
+}
+
+function isPointInsideViaductArea(point, level) {
+  const lv = normalizeTrackLevel(level);
+  if (lv <= 0 || !state.viaductAreas || state.viaductAreas.length === 0) {
+    return false;
+  }
+
+  for (const area of state.viaductAreas) {
+    if (normalizeTrackLevel(area.level) !== lv) {
+      continue;
+    }
+    const poly = normalizeAreaPoints(area);
+    if (poly.length < 3) {
+      continue;
+    }
+    if (pointInPolygon(point, poly)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isPointInsideHigherViaductArea(point, trackLevel) {
+  const baseLevel = normalizeTrackLevel(trackLevel);
+  if (!state.viaductAreas || state.viaductAreas.length === 0) {
+    return false;
+  }
+
+  for (const area of state.viaductAreas) {
+    const areaLevel = normalizeTrackLevel(area.level);
+    if (areaLevel <= 0 || areaLevel <= baseLevel) {
+      continue;
+    }
+    const poly = normalizeAreaPoints(area);
+    if (poly.length < 3) {
+      continue;
+    }
+    if (pointInPolygon(point, poly)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getTrackVisibleDistanceRanges(seg) {
+  const dx = seg.b.x - seg.a.x;
+  const dy = seg.b.y - seg.a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    return [];
+  }
+  // Keep gradient segments continuous; clipping them causes visual breaks at ramps.
+  if (getTrackEndpointLevel(seg, 'a') !== getTrackEndpointLevel(seg, 'b')) {
+    return [{ start: 0, end: len }];
+  }
+  if (!state.viaductAreas || state.viaductAreas.length === 0) {
+    return [{ start: 0, end: len }];
+  }
+
+  const sampleCount = Math.max(12, Math.min(220, Math.ceil(len * 6)));
+  const pointAt = (t) => ({ x: seg.a.x + dx * t, y: seg.a.y + dy * t });
+  const hiddenAt = (t) => isPointInsideHigherViaductArea(pointAt(t), getTrackLevelAt(seg, t));
+  const refineBoundary = (t0, t1, hiddenOnLeft) => {
+    let lo = t0;
+    let hi = t1;
+    for (let i = 0; i < 8; i += 1) {
+      const mid = (lo + hi) * 0.5;
+      if (hiddenAt(mid) === hiddenOnLeft) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return (lo + hi) * 0.5;
+  };
+
+  const hiddenRanges = [];
+  let runStart = 0;
+  let runHidden = hiddenAt(0);
+  for (let i = 1; i <= sampleCount; i += 1) {
+    const t = i / sampleCount;
+    const currentHidden = hiddenAt(t);
+    if (currentHidden !== runHidden) {
+      const edge = refineBoundary((i - 1) / sampleCount, t, runHidden);
+      if (runHidden) {
+        hiddenRanges.push({ start: runStart, end: edge });
+      }
+      runStart = edge;
+      runHidden = currentHidden;
+    }
+  }
+  if (runHidden) {
+    hiddenRanges.push({ start: runStart, end: 1 });
+  }
+
+  if (hiddenRanges.length === 0) {
+    return [{ start: 0, end: len }];
+  }
+
+  const visibleRanges = [];
+  let cursor = 0;
+  for (const hidden of hiddenRanges) {
+    const hs = clamp(hidden.start, 0, 1);
+    const he = clamp(hidden.end, 0, 1);
+    if (hs - cursor > 1e-5) {
+      visibleRanges.push({ start: cursor * len, end: hs * len });
+    }
+    cursor = Math.max(cursor, he);
+  }
+  if (1 - cursor > 1e-5) {
+    visibleRanges.push({ start: cursor * len, end: len });
+  }
+
+  return visibleRanges;
 }
 
 function drawDeadEndMarkers(nodeCounts) {
@@ -908,6 +2553,7 @@ function drawDeadEndMarkers(nodeCounts) {
   }
 
   const markerHalfLength = 1.5; // +/-1.5u from endpoint
+  const activeLevel = getActiveTrackLevel();
   ctx.lineWidth = getPlatformWorldWidth();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -929,8 +2575,12 @@ function drawDeadEndMarkers(nodeCounts) {
     ctx.stroke();
   };
 
-  const isEndpointConnected = (segIndex, endpoint) => {
-    if ((nodeCounts.get(endpointKey(endpoint)) || 0) >= 2) {
+  const isEndpointConnected = (segIndex, endpointName) => {
+    const seg = state.tracks[segIndex];
+    const endpoint = endpointName === 'a' ? seg.a : seg.b;
+    const endpointLv = getTrackEndpointLevel(seg, endpointName);
+
+    if ((nodeCounts.get(trackNodeKey(endpoint, endpointLv)) || 0) >= 2) {
       return true;
     }
 
@@ -943,7 +2593,8 @@ function drawDeadEndMarkers(nodeCounts) {
 
       const other = state.tracks[i];
       const pr = nearestPointOnSegment(endpoint, other.a, other.b);
-      if (pr.t > 0.02 && pr.t < 0.98 && pr.dist <= interiorSnapTol) {
+      const otherLv = getTrackLevelAt(other, pr.t);
+      if (pr.t > 0.02 && pr.t < 0.98 && pr.dist <= interiorSnapTol && Math.abs(otherLv - endpointLv) <= 0.35) {
         return true;
       }
     }
@@ -953,22 +2604,35 @@ function drawDeadEndMarkers(nodeCounts) {
 
   for (let i = 0; i < state.tracks.length; i += 1) {
     const seg = state.tracks[i];
-    if (!isEndpointConnected(i, seg.a)) {
+    ctx.globalAlpha = getTrackLevelVisualAlpha(seg, activeLevel);
+    const aHidden = isPointInsideHigherViaductArea(seg.a, getTrackEndpointLevel(seg, 'a'));
+    const bHidden = isPointInsideHigherViaductArea(seg.b, getTrackEndpointLevel(seg, 'b'));
+    if (!aHidden && !isEndpointConnected(i, 'a')) {
       drawAtEndpoint(seg.a, seg.b, seg.color);
     }
-    if (!isEndpointConnected(i, seg.b)) {
+    if (!bHidden && !isEndpointConnected(i, 'b')) {
       drawAtEndpoint(seg.b, seg.a, seg.color);
     }
   }
+  ctx.globalAlpha = 1;
 }
 
-function buildTrackSegment(start, end) {
+function buildTrackSegment(start, end, options = {}) {
+  const defaultStart = normalizeTrackLevel(state.settings.trackLevel);
+  const gradient = normalizeTrackGradient(state.settings.trackGradient);
+  const defaultEnd = normalizeTrackLevel(defaultStart + gradient);
+  const levelStart = normalizeTrackLevel(options.levelStart ?? defaultStart);
+  const levelEnd = normalizeTrackLevel(options.levelEnd ?? defaultEnd);
   return {
     a: { x: start.x, y: start.y },
     b: { x: end.x, y: end.y },
-    level: normalizeTrackLevel(state.settings.trackLevel),
+    level: levelStart,
+    levelStart,
+    levelEnd,
     lineType: normalizeTrackLineType(state.settings.trackLineType),
-    color: normalizeTrackColor(state.settings.trackColor)
+    color: normalizeTrackColor(state.settings.trackColor),
+    sideDisabledPositive: false,
+    sideDisabledNegative: false
   };
 }
 
@@ -981,15 +2645,22 @@ function getSelectedTrack() {
 
 function syncTrackControlInputs() {
   const selectedTrack = getSelectedTrack();
-  const level = selectedTrack ? normalizeTrackLevel(selectedTrack.level) : normalizeTrackLevel(state.settings.trackLevel);
+  const level = selectedTrack ? getTrackEndpointLevel(selectedTrack, 'a') : normalizeTrackLevel(state.settings.trackLevel);
+  const gradient = selectedTrack
+    ? normalizeTrackGradient(getTrackEndpointLevel(selectedTrack, 'b') - getTrackEndpointLevel(selectedTrack, 'a'))
+    : normalizeTrackGradient(state.settings.trackGradient);
   const lineType = selectedTrack ? normalizeTrackLineType(selectedTrack.lineType) : normalizeTrackLineType(state.settings.trackLineType);
   const color = selectedTrack ? normalizeTrackColor(selectedTrack.color) : normalizeTrackColor(state.settings.trackColor);
 
   if (trackLevelInput) {
     trackLevelInput.value = String(level);
   }
+  updateLevelIndicator(level);
   if (trackLineTypeSelect) {
     trackLineTypeSelect.value = lineType;
+  }
+  if (trackGradientSelect) {
+    trackGradientSelect.value = String(gradient);
   }
   if (trackColorInput) {
     trackColorInput.value = color;
@@ -1001,14 +2672,127 @@ function applyTrackSettingsToSelection() {
   if (!seg) {
     return false;
   }
-  seg.level = normalizeTrackLevel(state.settings.trackLevel);
+  const levelStart = normalizeTrackLevel(state.settings.trackLevel);
+  const gradient = normalizeTrackGradient(state.settings.trackGradient);
+  const levelEnd = normalizeTrackLevel(levelStart + gradient);
+  seg.level = levelStart;
+  seg.levelStart = levelStart;
+  seg.levelEnd = levelEnd;
   seg.lineType = normalizeTrackLineType(state.settings.trackLineType);
   seg.color = normalizeTrackColor(state.settings.trackColor);
   return true;
 }
 
+function updateLevelIndicator(levelValue) {
+  if (!levelIndicator) {
+    return;
+  }
+  const lv = normalizeTrackLevel(levelValue);
+  const sign = lv > 0 ? '+' : '';
+  levelIndicator.textContent = `Lv ${sign}${lv} (0基準)`;
+}
+
+function setTrackLevelValue(nextLevel, options = {}) {
+  const { commit = false } = options;
+  const normalized = normalizeTrackLevel(nextLevel);
+  state.settings.trackLevel = normalized;
+  if (trackLevelInput) {
+    trackLevelInput.value = String(normalized);
+  }
+  updateLevelIndicator(normalized);
+
+  if (state.selection && state.selection.type === 'track') {
+    const seg = state.tracks[state.selection.index];
+    if (!seg || !trackTouchesLevel(seg, normalized)) {
+      state.selection = null;
+    }
+  }
+
+  if (applyTrackSettingsToSelection()) {
+    if (commit) {
+      commitHistory();
+    }
+  }
+
+  render();
+}
+
 function getPlatformSegments() {
   return state.platforms.filter((p) => p && p.a && p.b);
+}
+
+function getPlatformLevel(platform) {
+  return normalizeTrackLevel(platform?.level);
+}
+
+function getPlatformVisibleDistanceRanges(platform) {
+  if (!platform || !platform.a || !platform.b) {
+    return [];
+  }
+
+  const dx = platform.b.x - platform.a.x;
+  const dy = platform.b.y - platform.a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    return [];
+  }
+
+  const platformLevel = getPlatformLevel(platform);
+  const sampleCount = Math.max(12, Math.min(220, Math.ceil(len * 6)));
+  const pointAt = (t) => ({ x: platform.a.x + dx * t, y: platform.a.y + dy * t });
+  const hiddenAt = (t) => isPointInsideHigherViaductArea(pointAt(t), platformLevel);
+  const refineBoundary = (t0, t1, hiddenOnLeft) => {
+    let lo = t0;
+    let hi = t1;
+    for (let i = 0; i < 8; i += 1) {
+      const mid = (lo + hi) * 0.5;
+      if (hiddenAt(mid) === hiddenOnLeft) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return (lo + hi) * 0.5;
+  };
+
+  const hiddenRanges = [];
+  let runStart = 0;
+  let runHidden = hiddenAt(0);
+  for (let i = 1; i <= sampleCount; i += 1) {
+    const t = i / sampleCount;
+    const currentHidden = hiddenAt(t);
+    if (currentHidden !== runHidden) {
+      const edge = refineBoundary((i - 1) / sampleCount, t, runHidden);
+      if (runHidden) {
+        hiddenRanges.push({ start: runStart, end: edge });
+      }
+      runStart = edge;
+      runHidden = currentHidden;
+    }
+  }
+  if (runHidden) {
+    hiddenRanges.push({ start: runStart, end: 1 });
+  }
+
+  if (hiddenRanges.length === 0) {
+    return [{ start: 0, end: len }];
+  }
+
+  const visibleRanges = [];
+  let cursor = 0;
+  for (const hidden of hiddenRanges) {
+    const hs = clamp(hidden.start, 0, 1);
+    const he = clamp(hidden.end, 0, 1);
+    if (hs - cursor > 1e-5) {
+      visibleRanges.push({ start: cursor * len, end: hs * len });
+    }
+    cursor = Math.max(cursor, he);
+  }
+  if (1 - cursor > 1e-5) {
+    visibleRanges.push({ start: cursor * len, end: len });
+  }
+
+  return visibleRanges;
 }
 
 function getPlatformNodes() {
@@ -1206,8 +2990,10 @@ function drawTrackLengthOverlay() {
   }
 
   const lengthDot = distance(state.draftingTrackStart, state.mousePreview);
-  const minLen = state.settings.minTrackLength;
-  const enough = lengthDot >= state.settings.minTrackLength;
+  const startLv = normalizeTrackLevel(state.draftingTrackStartLevel ?? state.settings.trackLevel);
+  const endLv = normalizeTrackLevel(state.settings.trackLevel);
+  const minLen = getRequiredTrackLength(startLv, endLv);
+  const enough = lengthDot >= minLen;
   const label = `${lengthDot.toFixed(2)} ${UNIT_LABEL}`;
 
   const screen = worldToScreen(state.mousePreview);
@@ -1242,37 +3028,109 @@ function drawTrackLengthOverlay() {
   ctx.restore();
 }
 
+function drawCursorMarker(point, options = {}) {
+  if (!point) {
+    return;
+  }
+
+  const {
+    hasStart = false,
+    strokeIdle = 'rgba(23, 116, 182, 0.95)',
+    strokeActive = 'rgba(22, 138, 206, 0.95)',
+    fillIdle = 'rgba(45, 136, 197, 0.92)',
+    fillActive = 'rgba(58, 164, 223, 0.92)',
+    baseRadius = 0.62,
+    activeRadius = 0.56,
+    innerIdle = 0.2,
+    innerActive = 0.16,
+    lineScale = 1.5,
+    lineMin = 0.14,
+    lineMax = 0.5
+  } = options;
+
+  const ringLineWidth = clamp(lineScale / Math.max(0.0001, state.view.zoom), lineMin, lineMax);
+  const ringRadius = hasStart ? activeRadius : baseRadius;
+  const innerRadius = hasStart ? innerActive : innerIdle;
+
+  ctx.strokeStyle = hasStart ? strokeActive : strokeIdle;
+  ctx.lineWidth = ringLineWidth;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, ringRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = hasStart ? fillActive : fillIdle;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, innerRadius, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 function drawTracks() {
   const trackWorldWidth = getTrackWorldWidth();
   const nodeCounts = collectTrackNodeCounts();
+  const activeLevel = getActiveTrackLevel();
+  const sideRailSuppression = buildSideRailSuppressionMap();
+  const visibleRangesPerTrack = state.tracks.map((seg) => getTrackVisibleDistanceRanges(seg));
+
+  // Draw elevated side rails first so result looks like: outer-line < track > outer-line.
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    const seg = state.tracks[i];
+    drawTrackSideLines(seg, null, null, getTrackLevelVisualAlpha(seg, activeLevel), {
+      ...(sideRailSuppression.get(i) || {}),
+      visibleRanges: visibleRangesPerTrack[i]
+    });
+  }
 
   ctx.lineWidth = trackWorldWidth;
   ctx.lineCap = 'butt';
   ctx.lineJoin = 'round';
-  ctx.globalAlpha = TRACK_BODY_ALPHA;
-  for (const seg of state.tracks) {
+  for (let i = 0; i < state.tracks.length; i += 1) {
+    const seg = state.tracks[i];
+    const visibleRanges = visibleRangesPerTrack[i];
+    if (!visibleRanges || visibleRanges.length === 0) {
+      continue;
+    }
+
+    const dx = seg.b.x - seg.a.x;
+    const dy = seg.b.y - seg.a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+      continue;
+    }
+    const ux = dx / len;
+    const uy = dy / len;
+
+    ctx.globalAlpha = TRACK_BODY_ALPHA * getTrackLevelVisualAlpha(seg, activeLevel);
     applyTrackLineStyle(seg);
-    ctx.beginPath();
-    ctx.moveTo(seg.a.x, seg.a.y);
-    ctx.lineTo(seg.b.x, seg.b.y);
-    ctx.stroke();
+    for (const range of visibleRanges) {
+      const startDist = Math.max(0, Math.min(len, Number(range.start)));
+      const endDist = Math.max(0, Math.min(len, Number(range.end)));
+      if (endDist - startDist <= 1e-6) {
+        continue;
+      }
+      ctx.beginPath();
+      ctx.moveTo(seg.a.x + ux * startDist, seg.a.y + uy * startDist);
+      ctx.lineTo(seg.a.x + ux * endDist, seg.a.y + uy * endDist);
+      ctx.stroke();
+    }
   }
   ctx.setLineDash([]);
   ctx.globalAlpha = 1;
 
   // Keep rounded appearance at branch/connection nodes only.
   const joinRadius = trackWorldWidth * 0.51;
-  ctx.globalAlpha = TRACK_BODY_ALPHA;
   for (const seg of state.tracks) {
+    ctx.globalAlpha = TRACK_BODY_ALPHA * getTrackLevelVisualAlpha(seg, activeLevel);
     ctx.fillStyle = normalizeTrackColor(seg.color);
-    const aCount = nodeCounts.get(endpointKey(seg.a)) || 0;
-    const bCount = nodeCounts.get(endpointKey(seg.b)) || 0;
-    if (aCount >= 2) {
+    const aCount = nodeCounts.get(trackNodeKey(seg.a, getTrackEndpointLevel(seg, 'a'))) || 0;
+    const bCount = nodeCounts.get(trackNodeKey(seg.b, getTrackEndpointLevel(seg, 'b'))) || 0;
+    const aHidden = isPointInsideHigherViaductArea(seg.a, getTrackEndpointLevel(seg, 'a'));
+    const bHidden = isPointInsideHigherViaductArea(seg.b, getTrackEndpointLevel(seg, 'b'));
+    if (aCount >= 2 && !aHidden) {
       ctx.beginPath();
       ctx.arc(seg.a.x, seg.a.y, joinRadius, 0, Math.PI * 2);
       ctx.fill();
     }
-    if (bCount >= 2) {
+    if (bCount >= 2 && !bHidden) {
       ctx.beginPath();
       ctx.arc(seg.b.x, seg.b.y, joinRadius, 0, Math.PI * 2);
       ctx.fill();
@@ -1307,24 +3165,18 @@ function drawTracks() {
   }
 
   if (state.mode === 'track' && state.mousePreview) {
-    const p = state.mousePreview;
-    const hasStart = Boolean(state.draftingTrackStart);
-    const ringLineWidth = clamp(1.6 / state.view.zoom, 0.14, 0.5);
-    // Match cursor ring outer edge to clearance: total 6u => radius 3u.
+    const ringLineWidth = clamp(1.6 / Math.max(0.0001, state.view.zoom), 0.14, 0.5);
     const ringRadius = Math.max(0.05, CLEARANCE_HALF_WIDTH_DOT - ringLineWidth / 2);
-    const innerRadius = hasStart ? 0.28 : 0.34;
-
-    // Cursor-following pick marker for the next click position.
-    ctx.strokeStyle = hasStart ? 'rgba(22, 138, 206, 0.95)' : 'rgba(23, 116, 182, 0.95)';
-    ctx.lineWidth = ringLineWidth;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, ringRadius, 0, Math.PI * 2);
-    ctx.stroke();
-
-    ctx.fillStyle = hasStart ? 'rgba(58, 164, 223, 0.92)' : 'rgba(45, 136, 197, 0.92)';
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, innerRadius, 0, Math.PI * 2);
-    ctx.fill();
+    drawCursorMarker(state.mousePreview, {
+      hasStart: Boolean(state.draftingTrackStart),
+      baseRadius: ringRadius,
+      activeRadius: ringRadius,
+      innerIdle: 0.34,
+      innerActive: 0.28,
+      lineScale: 1.6,
+      lineMin: 0.14,
+      lineMax: 0.5
+    });
   }
 
   if (state.selection && state.selection.type === 'track') {
@@ -1342,6 +3194,61 @@ function drawTracks() {
       ctx.setLineDash([]);
     }
   }
+
+  if (state.selection && state.selection.type === 'track-side') {
+    const seg = state.tracks[state.selection.index];
+    if (seg) {
+      const dx = seg.b.x - seg.a.x;
+      const dy = seg.b.y - seg.a.y;
+      const len = Math.hypot(dx, dy);
+      if (len >= 1e-6) {
+        const ux = dx / len;
+        const uy = dy / len;
+        const nx = -uy;
+        const ny = ux;
+        const sideSign = state.selection.side === 'negative' ? -1 : 1;
+        const offset = getTrackSideOffset(seg) * sideSign;
+        const visibleRanges = visibleRangesPerTrack[state.selection.index] || [{ start: 0, end: len }];
+        const hiWidth = clamp(2.0 / Math.max(0.0001, state.view.zoom), 0.15, 0.56);
+
+        ctx.strokeStyle = 'rgba(24, 155, 245, 0.96)';
+        ctx.lineWidth = hiWidth;
+        ctx.lineCap = 'round';
+        ctx.setLineDash([0.45, 0.3]);
+
+        for (const range of visibleRanges) {
+          const s = Math.max(0, Math.min(len, Number(range.start)));
+          const e = Math.max(0, Math.min(len, Number(range.end)));
+          if (e - s <= 1e-6) {
+            continue;
+          }
+          ctx.beginPath();
+          ctx.moveTo(seg.a.x + ux * s + nx * offset, seg.a.y + uy * s + ny * offset);
+          ctx.lineTo(seg.a.x + ux * e + nx * offset, seg.a.y + uy * e + ny * offset);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  if (state.mode === 'viaduct' && state.mousePreview) {
+    const isErase = state.settings.viaductWallAction === 'erase';
+    drawCursorMarker(state.mousePreview, {
+      hasStart: Boolean(state.draftingViaductStart),
+      strokeIdle: isErase ? 'rgba(166, 48, 48, 0.96)' : 'rgba(16, 16, 16, 0.9)',
+      strokeActive: isErase ? 'rgba(186, 58, 58, 0.96)' : 'rgba(28, 28, 28, 0.95)',
+      fillIdle: isErase ? 'rgba(211, 102, 102, 0.9)' : 'rgba(62, 62, 62, 0.86)',
+      fillActive: isErase ? 'rgba(226, 118, 118, 0.92)' : 'rgba(84, 84, 84, 0.9)',
+      baseRadius: 0.6,
+      activeRadius: 0.56,
+      innerIdle: 0.18,
+      innerActive: 0.16,
+      lineScale: 1.45,
+      lineMin: 0.13,
+      lineMax: 0.42
+    });
+  }
 }
 
 function drawTrackClearance() {
@@ -1355,6 +3262,7 @@ function drawTrackClearance() {
   ctx.lineCap = 'round';
 
   for (const seg of state.tracks) {
+    ctx.globalAlpha = getTrackLevelVisualAlpha(seg);
     const dx = seg.b.x - seg.a.x;
     const dy = seg.b.y - seg.a.y;
     const len = Math.hypot(dx, dy);
@@ -1378,13 +3286,26 @@ function drawTrackClearance() {
     ctx.stroke();
   }
 
+  ctx.globalAlpha = 1;
   ctx.setLineDash([]);
 }
 
 function drawPlatforms() {
   const platformWorldWidth = getPlatformWorldWidth();
   const platformSegments = getPlatformSegments();
-  const platformPolygons = buildPlatformFillPolygons(platformSegments);
+  const visibleRangesByPlatform = new Map();
+  const polygonSeedSegments = [];
+  for (const seg of platformSegments) {
+    const ranges = getPlatformVisibleDistanceRanges(seg);
+    visibleRangesByPlatform.set(seg, ranges);
+    if (ranges.length === 1) {
+      const fullLen = Math.hypot(seg.b.x - seg.a.x, seg.b.y - seg.a.y);
+      if (Math.abs(ranges[0].start) <= 1e-4 && Math.abs(ranges[0].end - fullLen) <= 1e-4) {
+        polygonSeedSegments.push(seg);
+      }
+    }
+  }
+  const platformPolygons = buildPlatformFillPolygons(polygonSeedSegments);
 
   // Fill enclosed platform areas when segment loops form a polygon.
   ctx.fillStyle = 'rgba(138, 138, 138, 0.34)';
@@ -1400,14 +3321,35 @@ function drawPlatforms() {
 
   for (const p of state.platforms) {
     if (p.a && p.b) {
+      const visibleRanges = visibleRangesByPlatform.get(p) || getPlatformVisibleDistanceRanges(p);
+      if (visibleRanges.length === 0) {
+        continue;
+      }
+
+      const dx = p.b.x - p.a.x;
+      const dy = p.b.y - p.a.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-6) {
+        continue;
+      }
+      const ux = dx / len;
+      const uy = dy / len;
+
       ctx.strokeStyle = '#8a8a8a';
       ctx.lineWidth = platformWorldWidth;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(p.a.x, p.a.y);
-      ctx.lineTo(p.b.x, p.b.y);
-      ctx.stroke();
+      for (const range of visibleRanges) {
+        const startDist = Math.max(0, Math.min(len, Number(range.start)));
+        const endDist = Math.max(0, Math.min(len, Number(range.end)));
+        if (endDist - startDist <= 1e-6) {
+          continue;
+        }
+        ctx.beginPath();
+        ctx.moveTo(p.a.x + ux * startDist, p.a.y + uy * startDist);
+        ctx.lineTo(p.a.x + ux * endDist, p.a.y + uy * endDist);
+        ctx.stroke();
+      }
       continue;
     }
 
@@ -1454,16 +3396,32 @@ function drawPlatforms() {
       ctx.lineWidth = Math.max(platformWorldWidth + 0.24, 0.24);
       ctx.setLineDash([0.6, 0.4]);
       if (p.a && p.b) {
-        ctx.beginPath();
-        ctx.moveTo(p.a.x, p.a.y);
-        ctx.lineTo(p.b.x, p.b.y);
-        ctx.stroke();
+        const visibleRanges = visibleRangesByPlatform.get(p) || getPlatformVisibleDistanceRanges(p);
+        const dx = p.b.x - p.a.x;
+        const dy = p.b.y - p.a.y;
+        const len = Math.hypot(dx, dy);
+        if (len >= 1e-6) {
+          const ux = dx / len;
+          const uy = dy / len;
+          for (const range of visibleRanges) {
+            const startDist = Math.max(0, Math.min(len, Number(range.start)));
+            const endDist = Math.max(0, Math.min(len, Number(range.end)));
+            if (endDist - startDist <= 1e-6) {
+              continue;
+            }
+            ctx.beginPath();
+            ctx.moveTo(p.a.x + ux * startDist, p.a.y + uy * startDist);
+            ctx.lineTo(p.a.x + ux * endDist, p.a.y + uy * endDist);
+            ctx.stroke();
+          }
+        }
       } else {
         ctx.strokeRect(p.x, p.y, p.w, p.h);
       }
       ctx.setLineDash([]);
     }
   }
+
 }
 
 function drawTrain(train) {
@@ -1497,9 +3455,51 @@ function drawTrain(train) {
   ctx.restore();
 }
 
+function getTrainLevel(train) {
+  if (Number.isFinite(Number(train.level))) {
+    return normalizeTrackLevel(train.level);
+  }
+
+  const pr = closestTrackProjection(train);
+  if (!pr || !pr.seg || pr.dist > 1.5) {
+    return 0;
+  }
+  return getTrackLevelAt(pr.seg, pr.t);
+}
+
+function isTrainUnderHigherViaduct(train, trainLevel) {
+  const spacing = TRAIN_DIM.carLengthDot + TRAIN_DIM.carGapDot;
+  const sin = Math.sin(train.angle || 0);
+  const cos = Math.cos(train.angle || 0);
+  const probe = (lx, ly = 0) => ({
+    x: train.x + lx * cos - ly * sin,
+    y: train.y + lx * sin + ly * cos
+  });
+
+  if (isPointInsideHigherViaductArea(probe(-1.2), trainLevel)) {
+    return true;
+  }
+
+  for (let i = 0; i < train.cars; i += 1) {
+    const cx = i * spacing + TRAIN_DIM.carLengthDot * 0.5;
+    if (isPointInsideHigherViaductArea(probe(cx), trainLevel)) {
+      return true;
+    }
+  }
+
+  const tailX = Math.max(0, train.cars * spacing - TRAIN_DIM.carGapDot);
+  return isPointInsideHigherViaductArea(probe(tailX), trainLevel);
+}
+
 function drawTrains() {
   for (let i = 0; i < state.trains.length; i += 1) {
     const tr = state.trains[i];
+    const trainLevel = getTrainLevel(tr);
+    tr.level = trainLevel;
+    if (isTrainUnderHigherViaduct(tr, trainLevel)) {
+      continue;
+    }
+
     drawTrain(tr);
     if (state.selection && state.selection.type === 'train' && state.selection.index === i) {
       ctx.save();
@@ -1526,11 +3526,15 @@ function render() {
   if (state.layers.grid) {
     drawGrid();
   }
-  if (state.layers.track) {
-    drawTracks();
-  }
   if (state.layers.clearance) {
     drawTrackClearance();
+  }
+  if (state.mode === 'viaduct-area' || state.layers.track) {
+    drawViaductAreas();
+  }
+  if (state.layers.track) {
+    drawTracks();
+    drawViaductWalls();
   }
   if (state.layers.platform) {
     drawPlatforms();
@@ -1552,7 +3556,7 @@ function updateStatusBar() {
     zoomStat.textContent = `${sign}${rounded}%`;
   }
   if (countStat) {
-    countStat.textContent = `T${state.tracks.length} P${state.platforms.length} R${state.trains.length}`;
+    countStat.textContent = `T${state.tracks.length} V${state.viaductWalls.length} A${state.viaductAreas.length} P${state.platforms.length} R${state.trains.length}`;
   }
 }
 
@@ -1583,6 +3587,24 @@ function eraseAt(point) {
     }
   }
 
+  for (let i = state.viaductWalls.length - 1; i >= 0; i -= 1) {
+    const wall = state.viaductWalls[i];
+    const pr = nearestPointOnSegment(point, wall.a, wall.b);
+    if (pr.dist < 0.8) {
+      state.viaductWalls.splice(i, 1);
+      return true;
+    }
+  }
+
+  for (let i = state.viaductAreas.length - 1; i >= 0; i -= 1) {
+    const area = state.viaductAreas[i];
+    const poly = normalizeAreaPoints(area);
+    if (pointInPolygon(point, poly)) {
+      state.viaductAreas.splice(i, 1);
+      return true;
+    }
+  }
+
   for (let i = state.tracks.length - 1; i >= 0; i -= 1) {
     const seg = state.tracks[i];
     const pr = nearestPointOnSegment(point, seg.a, seg.b);
@@ -1602,7 +3624,7 @@ function pickEntityAt(point) {
       return;
     }
     const score = dist / Math.max(radius, 0.0001);
-    const priority = type === 'track' ? 0 : type === 'platform' ? 1 : 2;
+    const priority = type === 'track' ? 0 : type === 'viaduct' ? 1 : type === 'viaduct-area' ? 2 : type === 'platform' ? 3 : 4;
     if (!best || score < best.score || (Math.abs(score - best.score) < 1e-6 && priority < best.priority)) {
       best = { type, index, score, priority };
     }
@@ -1626,10 +3648,37 @@ function pickEntityAt(point) {
     pushCandidate('platform', i, Math.hypot(dx, dy), PLATFORM_INTERACT_RADIUS_DOT);
   }
 
+  const viaductPickRadius = clamp(6 / Math.max(0.0001, state.view.zoom), 0.16, 0.7);
+  for (let i = 0; i < state.viaductWalls.length; i += 1) {
+    const wall = state.viaductWalls[i];
+    const wallLv = normalizeTrackLevel(wall.level);
+    const visible = wallLv === getActiveTrackLevel();
+    if (!visible) {
+      continue;
+    }
+    const pr = nearestPointOnSegment(point, wall.a, wall.b);
+    pushCandidate('viaduct', i, pr.dist, viaductPickRadius);
+  }
+
+  for (let i = 0; i < state.viaductAreas.length; i += 1) {
+    const area = state.viaductAreas[i];
+    if (normalizeTrackLevel(area.level) !== getActiveTrackLevel()) {
+      continue;
+    }
+    const inside = pointInPolygon(point, normalizeAreaPoints(area));
+    if (inside) {
+      pushCandidate('viaduct-area', i, 0, 1);
+    }
+  }
+
   // Track picks are based on centerline nearest distance.
   const trackPickRadius = clamp(7 / Math.max(0.0001, state.view.zoom), 0.18, 0.8);
+  const activeLevel = getActiveTrackLevel();
   for (let i = 0; i < state.tracks.length; i += 1) {
     const seg = state.tracks[i];
+    if (!trackTouchesLevel(seg, activeLevel)) {
+      continue;
+    }
     const pr = nearestPointOnSegment(point, seg.a, seg.b);
     pushCandidate('track', i, pr.dist, trackPickRadius);
   }
@@ -1674,6 +3723,28 @@ function moveSelectionBy(dx, dy) {
     return;
   }
 
+  if (state.selection.type === 'viaduct') {
+    const wall = state.viaductWalls[state.selection.index];
+    if (!wall) {
+      return;
+    }
+    wall.a.x += dx;
+    wall.a.y += dy;
+    wall.b.x += dx;
+    wall.b.y += dy;
+    return;
+  }
+
+  if (state.selection.type === 'viaduct-area') {
+    const area = state.viaductAreas[state.selection.index];
+    if (!area) {
+      return;
+    }
+    const points = normalizeAreaPoints(area).map((p) => ({ x: p.x + dx, y: p.y + dy }));
+    area.points = points;
+    return;
+  }
+
   if (state.selection.type === 'train') {
     const tr = state.trains[state.selection.index];
     if (!tr) {
@@ -1697,6 +3768,25 @@ function deleteSelection() {
   }
   if (state.selection.type === 'platform') {
     state.platforms.splice(state.selection.index, 1);
+    deleted = true;
+  }
+  if (state.selection.type === 'viaduct') {
+    state.viaductWalls.splice(state.selection.index, 1);
+    deleted = true;
+  }
+  if (state.selection.type === 'track-side') {
+    const seg = state.tracks[state.selection.index];
+    if (seg) {
+      if (state.selection.side === 'negative') {
+        seg.sideDisabledNegative = true;
+      } else {
+        seg.sideDisabledPositive = true;
+      }
+      deleted = true;
+    }
+  }
+  if (state.selection.type === 'viaduct-area') {
+    state.viaductAreas.splice(state.selection.index, 1);
     deleted = true;
   }
   if (state.selection.type === 'train') {
@@ -1764,10 +3854,31 @@ canvas.addEventListener('mousemove', (ev) => {
 
   const p = state.mode === 'track'
     ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
+    : state.mode === 'viaduct'
+      ? (state.settings.viaductWallAction === 'erase'
+        ? raw
+        : resolveViaductWallPoint(raw, state.draftingViaductStart, {
+          enableNodeSnap: !ev.altKey,
+          preferWallSnap: false
+        }))
+    : state.mode === 'viaduct-area'
+      ? resolveViaductAreaPoint(raw)
     : state.mode === 'platform'
       ? resolvePlatformPoint(raw, state.draftingPlatformStart, { enableNodeSnap: !ev.altKey })
       : quantizePoint(raw);
   state.mousePreview = p;
+  if (state.mode === 'viaduct' && state.draftingViaductStart) {
+    state.draftingViaductCurrent = p;
+  }
+  if (state.mode === 'viaduct-area') {
+    if (state.settings.viaductAreaShape === 'poly') {
+      if (state.draftingViaductAreaPoints.length > 0) {
+        state.draftingViaductAreaCurrent = p;
+      }
+    } else if (state.draftingViaductAreaStart) {
+      state.draftingViaductAreaCurrent = p;
+    }
+  }
   if (state.mode === 'platform' && state.draftingPlatformStart) {
     state.draftingPlatformCurrent = p;
   }
@@ -1775,6 +3886,16 @@ canvas.addEventListener('mousemove', (ev) => {
 });
 
 canvas.addEventListener('mousedown', (ev) => {
+  if (ev.button === 2 && state.mode === 'viaduct-area' && state.settings.viaductAreaShape === 'poly') {
+    if (state.draftingViaductAreaPoints.length > 0) {
+      state.draftingViaductAreaPoints.pop();
+      const n = state.draftingViaductAreaPoints.length;
+      state.draftingViaductAreaCurrent = n > 0 ? state.draftingViaductAreaPoints[n - 1] : null;
+      render();
+    }
+    return;
+  }
+
   if (ev.button === 1 || ev.button === 2) {
     state.view.panning = true;
     state.view.panLastScreen = toCanvasScreenPoint(ev);
@@ -1805,6 +3926,15 @@ canvas.addEventListener('mousedown', (ev) => {
 
   const p = state.mode === 'track'
     ? resolveTrackPoint(raw, state.draftingTrackStart, { enableNodeSnap: !ev.altKey })
+    : state.mode === 'viaduct'
+      ? (state.settings.viaductWallAction === 'erase'
+        ? raw
+        : resolveViaductWallPoint(raw, state.draftingViaductStart, {
+          enableNodeSnap: !ev.altKey,
+          preferWallSnap: false
+        }))
+    : state.mode === 'viaduct-area'
+      ? resolveViaductAreaPoint(raw)
     : state.mode === 'platform'
       ? resolvePlatformPoint(raw, state.draftingPlatformStart, { enableNodeSnap: !ev.altKey })
       : quantizePoint(raw);
@@ -1812,13 +3942,20 @@ canvas.addEventListener('mousedown', (ev) => {
   if (state.mode === 'track') {
     if (!state.draftingTrackStart) {
       state.draftingTrackStart = p;
+      state.draftingTrackStartLevel = normalizeTrackLevel(state.settings.trackLevel);
     } else {
-      const minTrackLength = Math.max(1, Number(state.settings.minTrackLength) || 1);
+      const startLevel = normalizeTrackLevel(state.draftingTrackStartLevel ?? state.settings.trackLevel);
+      const endLevel = normalizeTrackLevel(state.settings.trackLevel);
+      const minTrackLength = getRequiredTrackLength(startLevel, endLevel);
       if (distance(state.draftingTrackStart, p) >= minTrackLength) {
-        state.tracks.push(buildTrackSegment(state.draftingTrackStart, p));
+        state.tracks.push(buildTrackSegment(state.draftingTrackStart, p, {
+          levelStart: startLevel,
+          levelEnd: endLevel
+        }));
         commitHistory();
       }
       state.draftingTrackStart = null;
+      state.draftingTrackStartLevel = null;
     }
     render();
     return;
@@ -1832,13 +3969,109 @@ canvas.addEventListener('mousedown', (ev) => {
       if (distance(state.draftingPlatformStart, p) >= PLATFORM_MIN_LENGTH_DOT) {
         state.platforms.push({
           a: { x: state.draftingPlatformStart.x, y: state.draftingPlatformStart.y },
-          b: { x: p.x, y: p.y }
+          b: { x: p.x, y: p.y },
+          level: getActiveTrackLevel()
         });
         commitHistory();
       }
       // Continue drawing from the last endpoint for chained platform segments.
       state.draftingPlatformStart = p;
       state.draftingPlatformCurrent = p;
+    }
+    render();
+    return;
+  }
+
+  if (state.mode === 'viaduct') {
+    if (state.settings.viaductWallAction === 'erase') {
+      const bestWall = findNearestViaductWallProjection(p, {
+        level: getActiveTrackLevel(),
+        allowAnyLevel: true,
+        snapRadiusPx: 22
+      });
+      const bestTrackSide = findNearestTrackSideProjection(p, {
+        level: getActiveTrackLevel(),
+        allowAnyLevel: true,
+        snapRadiusPx: 22
+      });
+
+      let nextSelection = null;
+      if (bestWall && bestTrackSide) {
+        nextSelection = bestWall.score <= bestTrackSide.score
+          ? { type: 'viaduct', index: bestWall.index }
+          : { type: 'track-side', index: bestTrackSide.index, side: bestTrackSide.side };
+      } else if (bestWall) {
+        nextSelection = { type: 'viaduct', index: bestWall.index };
+      } else if (bestTrackSide) {
+        nextSelection = { type: 'track-side', index: bestTrackSide.index, side: bestTrackSide.side };
+      }
+
+      state.selection = nextSelection;
+      if (!nextSelection) {
+        setSaveNotice('VCT: 外側線をクリックしてください', true);
+      }
+      state.draftingViaductStart = null;
+      state.draftingViaductCurrent = null;
+      render();
+      return;
+    }
+
+    if (!state.draftingViaductStart) {
+      state.draftingViaductStart = p;
+      state.draftingViaductCurrent = p;
+    } else {
+      if (distance(state.draftingViaductStart, p) >= 0.8) {
+        state.viaductWalls.push({
+          a: { x: state.draftingViaductStart.x, y: state.draftingViaductStart.y },
+          b: { x: p.x, y: p.y },
+          level: getActiveTrackLevel(),
+          origin: 'manual'
+        });
+        commitHistory();
+      }
+      state.draftingViaductStart = p;
+      state.draftingViaductCurrent = p;
+    }
+    render();
+    return;
+  }
+
+  if (state.mode === 'viaduct-area') {
+    if (getActiveTrackLevel() <= 0) {
+      setSaveNotice('VAT: Lv1以上で編集してください', true);
+      state.draftingViaductAreaStart = null;
+      state.draftingViaductAreaCurrent = null;
+      state.draftingViaductAreaPoints = [];
+      render();
+      return;
+    }
+
+    if (state.settings.viaductAreaShape === 'poly') {
+      const points = state.draftingViaductAreaPoints;
+      const closeRadius = clamp(7 / Math.max(0.0001, state.view.zoom), 0.2, 0.8);
+      if (points.length >= 3 && distance(p, points[0]) <= closeRadius) {
+        if (applyViaductAreaPolygon(points)) {
+          commitHistory();
+        }
+        state.draftingViaductAreaPoints = [];
+        state.draftingViaductAreaCurrent = null;
+        render();
+        return;
+      }
+
+      state.draftingViaductAreaPoints.push(p);
+      state.draftingViaductAreaCurrent = p;
+    } else {
+      if (!state.draftingViaductAreaStart) {
+        state.draftingViaductAreaStart = p;
+        state.draftingViaductAreaCurrent = p;
+      } else {
+        if (applyViaductAreaRect(state.draftingViaductAreaStart, p)) {
+          commitHistory();
+        }
+        state.draftingViaductAreaStart = null;
+        state.draftingViaductAreaCurrent = null;
+      }
     }
     render();
     return;
@@ -1851,7 +4084,8 @@ canvas.addEventListener('mousedown', (ev) => {
         x: pr.x,
         y: pr.y,
         angle: pr.angle,
-        cars: 4
+        cars: 4,
+        level: pr.seg ? getTrackLevelAt(pr.seg, pr.t) : 0
       });
       commitHistory();
       render();
@@ -1904,7 +4138,7 @@ canvas.addEventListener('mouseup', () => {
 });
 
 clearBtn.addEventListener('click', () => {
-  if (state.tracks.length === 0 && state.platforms.length === 0 && state.trains.length === 0) {
+  if (state.tracks.length === 0 && state.viaductWalls.length === 0 && state.viaductAreas.length === 0 && state.platforms.length === 0 && state.trains.length === 0) {
     return;
   }
   clearAllData();
@@ -2002,12 +4236,21 @@ layerTrain.addEventListener('change', () => {
 });
 
 for (const btn of modeButtons) {
-  btn.addEventListener('click', () => setMode(btn.dataset.mode));
+  btn.addEventListener('click', () => {
+    if (btn.dataset.mode === 'viaduct') {
+      setMode(state.settings.viaductEditMode === 'area' ? 'viaduct-area' : 'viaduct');
+      return;
+    }
+    setMode(btn.dataset.mode);
+  });
 }
 
 function refreshSettingLabels() {
   trackWidthLabel.textContent = `${Math.round(state.settings.trackWidth)}${UNIT_LABEL}`;
   minTrackLenLabel.textContent = `${state.settings.minTrackLength.toFixed(1)}${UNIT_LABEL}`;
+  if (viaductSpanLabel) {
+    viaductSpanLabel.textContent = `${Math.round(state.settings.viaductSpan)}${UNIT_LABEL}`;
+  }
   syncTrackControlInputs();
 }
 
@@ -2033,17 +4276,33 @@ trackWidthRange.addEventListener('input', () => {
 });
 
 trackLevelInput.addEventListener('input', () => {
-  state.settings.trackLevel = normalizeTrackLevel(trackLevelInput.value);
-  if (applyTrackSettingsToSelection()) {
-    render();
-  }
+  setTrackLevelValue(trackLevelInput.value, { commit: false });
 });
 
-trackLevelInput.addEventListener('change', () => {
-  if (applyTrackSettingsToSelection()) {
-    commitHistory();
+if (levelUpBtn) {
+  levelUpBtn.addEventListener('click', () => {
+    setTrackLevelValue(state.settings.trackLevel + 1, { commit: true });
+  });
+}
+
+if (levelDownBtn) {
+  levelDownBtn.addEventListener('click', () => {
+    setTrackLevelValue(state.settings.trackLevel - 1, { commit: true });
+  });
+}
+
+if (trackGradientSelect) {
+  trackGradientSelect.addEventListener('change', () => {
+    state.settings.trackGradient = normalizeTrackGradient(trackGradientSelect.value);
+    if (applyTrackSettingsToSelection()) {
+      commitHistory();
+    }
     render();
-  }
+  });
+}
+
+trackLevelInput.addEventListener('change', () => {
+  setTrackLevelValue(trackLevelInput.value, { commit: true });
 });
 
 trackLineTypeSelect.addEventListener('change', () => {
@@ -2073,13 +4332,110 @@ minTrackLenRange.addEventListener('input', () => {
   refreshSettingLabels();
 });
 
+if (viaductSpanRange) {
+  viaductSpanRange.addEventListener('input', () => {
+    state.settings.viaductSpan = clamp(Number(viaductSpanRange.value), 4, 80);
+    refreshSettingLabels();
+    render();
+  });
+}
+
+if (viaductWallActionDrawBtn) {
+  viaductWallActionDrawBtn.addEventListener('click', () => {
+    state.settings.viaductWallAction = 'draw';
+    state.draftingViaductStart = null;
+    state.draftingViaductCurrent = null;
+    syncViaductActionButtons();
+    updateModeGuide(state.mode);
+    render();
+  });
+}
+
+if (viaductWallActionEraseBtn) {
+  viaductWallActionEraseBtn.addEventListener('click', () => {
+    state.settings.viaductWallAction = 'erase';
+    state.draftingViaductStart = null;
+    state.draftingViaductCurrent = null;
+    syncViaductActionButtons();
+    updateModeGuide(state.mode);
+    render();
+  });
+}
+
+if (viaductAreaModePaintBtn) {
+  viaductAreaModePaintBtn.addEventListener('click', () => {
+    state.settings.viaductAreaMode = 'paint';
+    syncViaductActionButtons();
+    updateModeGuide(state.mode);
+    render();
+  });
+}
+
+if (viaductAreaModeEraseBtn) {
+  viaductAreaModeEraseBtn.addEventListener('click', () => {
+    state.settings.viaductAreaMode = 'erase';
+    syncViaductActionButtons();
+    updateModeGuide(state.mode);
+    render();
+  });
+}
+
+if (viaductAreaShapeSelect) {
+  viaductAreaShapeSelect.addEventListener('change', () => {
+    state.settings.viaductAreaShape = 'poly';
+    viaductAreaShapeSelect.value = 'poly';
+    state.draftingViaductAreaStart = null;
+    state.draftingViaductAreaCurrent = null;
+    state.draftingViaductAreaPoints = [];
+    updateModeGuide(state.mode);
+    render();
+  });
+}
+
+if (viaductWallEditBtn) {
+  viaductWallEditBtn.addEventListener('click', () => {
+    state.settings.viaductEditMode = 'wall';
+    setMode('viaduct');
+  });
+}
+
+if (viaductAreaEditBtn) {
+  viaductAreaEditBtn.addEventListener('click', () => {
+    state.settings.viaductEditMode = 'area';
+    setMode('viaduct-area');
+  });
+}
+
 window.addEventListener('keydown', (ev) => {
   if (isTitleVisible()) {
     return;
   }
 
+  if (ev.key === 'PageUp') {
+    ev.preventDefault();
+    setTrackLevelValue(state.settings.trackLevel + 1, { commit: true });
+    return;
+  }
+
+  if (ev.key === 'PageDown') {
+    ev.preventDefault();
+    setTrackLevelValue(state.settings.trackLevel - 1, { commit: true });
+    return;
+  }
+
   const mod = ev.ctrlKey || ev.metaKey;
   const key = ev.key.toLowerCase();
+
+  if (state.mode === 'viaduct-area' && state.settings.viaductAreaShape === 'poly' && mod && !ev.altKey && key === 'z' && !ev.shiftKey) {
+    if (state.draftingViaductAreaPoints.length > 0) {
+      state.draftingViaductAreaPoints.pop();
+      const n = state.draftingViaductAreaPoints.length;
+      state.draftingViaductAreaCurrent = n > 0 ? state.draftingViaductAreaPoints[n - 1] : null;
+      render();
+      ev.preventDefault();
+      return;
+    }
+  }
 
   if (mod && !ev.altKey && key === 'z' && !ev.shiftKey) {
     ev.preventDefault();
@@ -2087,13 +4443,13 @@ window.addEventListener('keydown', (ev) => {
     return;
   }
 
-  if (mod && !ev.altKey && (key === 'y' || (key === 'z' && ev.shiftKey))) {
-      if (mod && !ev.altKey && key === 's') {
-        ev.preventDefault();
-        quickSaveToLocal();
-        return;
-      }
+  if (mod && !ev.altKey && key === 's') {
+    ev.preventDefault();
+    quickSaveToLocal();
+    return;
+  }
 
+  if (mod && !ev.altKey && (key === 'y' || (key === 'z' && ev.shiftKey))) {
     ev.preventDefault();
     redo();
     return;
@@ -2101,6 +4457,12 @@ window.addEventListener('keydown', (ev) => {
 
   if (ev.key === 'Escape') {
     state.draftingTrackStart = null;
+    state.draftingTrackStartLevel = null;
+    state.draftingViaductStart = null;
+    state.draftingViaductCurrent = null;
+    state.draftingViaductAreaStart = null;
+    state.draftingViaductAreaCurrent = null;
+    state.draftingViaductAreaPoints = [];
     state.draftingPlatformStart = null;
     state.draftingPlatformCurrent = null;
     state.draggingSelection = false;
@@ -2109,11 +4471,25 @@ window.addEventListener('keydown', (ev) => {
   }
 
   if (ev.key === 'Delete' || ev.key === 'Backspace') {
-    if (state.mode === 'select' && state.selection) {
+    if ((state.mode === 'select' && state.selection)
+      || (state.mode === 'viaduct' && state.settings.viaductWallAction === 'erase' && (state.selection?.type === 'viaduct' || state.selection?.type === 'track-side'))) {
       ev.preventDefault();
       deleteSelection();
       render();
     }
+  }
+
+  if (state.mode === 'viaduct-area' && state.settings.viaductAreaShape === 'poly' && ev.key === 'Enter') {
+    if (state.draftingViaductAreaPoints.length >= 3) {
+      if (applyViaductAreaPolygon(state.draftingViaductAreaPoints)) {
+        commitHistory();
+      }
+      state.draftingViaductAreaPoints = [];
+      state.draftingViaductAreaCurrent = null;
+      render();
+    }
+    ev.preventDefault();
+    return;
   }
 
   if (ev.key.toLowerCase() === 'l') {
@@ -2126,6 +4502,10 @@ window.addEventListener('keydown', (ev) => {
 resetViewToDefault();
 commitHistory();
 refreshSettingLabels();
+syncViaductActionButtons();
+updateModeGuide(state.mode);
+updateModeSettingVisibility(state.mode);
+updateViaductEditSwitch(state.mode);
 render();
 if (titleScreen) {
   titleScreen.hidden = false;

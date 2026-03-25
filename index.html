@@ -42,18 +42,19 @@
       </div>
 
       <div class="tools">
-        <button data-mode="select" class="tool" title="Select">SEL</button>
-        <button data-mode="track" class="tool active" title="Track">TRK</button>
-        <button data-mode="platform" class="tool" title="Platform">PLT</button>
-        <button data-mode="train" class="tool" title="Train">TRN</button>
-        <button data-mode="car" class="tool" title="Add Car">CAR</button>
-        <button data-mode="erase" class="tool" title="Erase">DEL</button>
+        <button data-mode="select" class="tool" title="選択">選択</button>
+        <button data-mode="track" class="tool active" title="線路">線路</button>
+        <button data-mode="platform" class="tool" title="プラットホーム">ホーム</button>
+        <button data-mode="viaduct" class="tool" title="高架">高架</button>
+        <button data-mode="train" class="tool" title="列車">列車</button>
+        <button data-mode="car" class="tool" title="車両追加">増結</button>
+        <button data-mode="erase" class="tool" title="削除">削除</button>
         <span class="tool-sep" aria-hidden="true"></span>
-        <button id="layerMenuBtn" class="tool" title="Layers">LAY</button>
-        <button id="quickSaveBtn" class="tool" title="Quick Save">QSV</button>
-        <button id="saveBtn" class="tool" title="Save">SAV</button>
-        <button id="loadBtn" class="tool" title="Load">LOD</button>
-        <button id="clearBtn" class="tool ghost" title="Clear">CLR</button>
+        <button id="layerMenuBtn" class="tool" title="表示レイヤー">レイヤー</button>
+        <button id="quickSaveBtn" class="tool" title="クイック保存">QSV</button>
+        <button id="saveBtn" class="tool" title="ファイル保存">保存</button>
+        <button id="loadBtn" class="tool" title="ファイル読込">読込</button>
+        <button id="clearBtn" class="tool ghost" title="全削除">全削除</button>
       </div>
 
       <section id="layerPanel" class="layer-panel" aria-label="Display Layers" hidden>
@@ -64,7 +65,16 @@
         <label><input id="layerTrain" type="checkbox" checked /> Train</label>
       </section>
 
-      <p id="hint">Track: 始点をクリックして終点をクリック</p>
+      <p id="hint">線路: 始点クリック → 終点クリックで敷設</p>
+      <section class="mode-guide" aria-label="操作ガイド">
+        <p id="modeLabel" class="mode-label">現在モード: 線路</p>
+        <div id="viaductEditSwitch" class="viaduct-edit-switch" hidden>
+          <span>高架編集:</span>
+          <button id="viaductWallEditBtn" type="button" class="tool mini">外側線</button>
+          <button id="viaductAreaEditBtn" type="button" class="tool mini">高架エリア</button>
+        </div>
+        <ul id="modeSteps" class="mode-steps"></ul>
+      </section>
 
       <section class="track-settings" aria-label="Track Laying Settings">
         <label>
@@ -90,7 +100,22 @@
         </label>
         <label>
           Level
-          <input id="trackLevelInput" type="number" min="-9" max="9" step="1" value="0" />
+          <input id="trackLevelInput" type="number" min="-4" max="4" step="1" value="0" />
+        </label>
+        <div class="level-stepper" aria-label="Level Controls">
+          <button id="levelDownBtn" type="button" class="level-btn" title="PageDown">▽</button>
+          <span id="levelIndicator" class="level-indicator">Lv 0 (0基準)</span>
+          <button id="levelUpBtn" type="button" class="level-btn" title="PageUp">△</button>
+        </div>
+        <label>
+          Gradient
+          <select id="trackGradientSelect">
+            <option value="-2">Down -2</option>
+            <option value="-1">Down -1</option>
+            <option value="0" selected>Flat 0</option>
+            <option value="1">Up +1</option>
+            <option value="2">Up +2</option>
+          </select>
         </label>
         <label>
           Line Type
@@ -108,6 +133,31 @@
           Min Length
           <input id="minTrackLenRange" type="range" min="1" max="20" step="0.5" value="1" />
           <span id="minTrackLenLabel">1.0u</span>
+        </label>
+        <label data-setting-group="viaduct-wall">
+          Viaduct Span
+          <input id="viaductSpanRange" type="range" min="4" max="80" step="1" value="24" />
+          <span id="viaductSpanLabel">24u</span>
+        </label>
+        <label data-setting-group="viaduct-wall">
+          外側線操作
+          <span id="viaductWallActionButtons" class="mode-toggle" role="group" aria-label="外側線操作">
+            <button id="viaductWallActionDrawBtn" type="button" class="tool mini active">追加</button>
+            <button id="viaductWallActionEraseBtn" type="button" class="tool mini">削除</button>
+          </span>
+        </label>
+        <label data-setting-group="viaduct-area">
+          Viaduct Area
+          <span id="viaductAreaModeButtons" class="mode-toggle" role="group" aria-label="高架エリア操作">
+            <button id="viaductAreaModePaintBtn" type="button" class="tool mini active">追加</button>
+            <button id="viaductAreaModeEraseBtn" type="button" class="tool mini">削除</button>
+          </span>
+        </label>
+        <label data-setting-group="viaduct-area">
+          VAT Shape
+          <select id="viaductAreaShapeSelect">
+            <option value="poly" selected>Polygon</option>
+          </select>
         </label>
       </section>
     </header>
