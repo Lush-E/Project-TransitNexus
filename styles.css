@@ -348,6 +348,114 @@ body {
   display: none;
 }
 
+.line-color-setting {
+  align-items: flex-start;
+}
+
+.line-color-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.line-color-window {
+  position: fixed;
+  top: 104px;
+  right: 12px;
+  z-index: 22;
+  display: grid;
+  gap: 6px;
+  width: min(420px, calc(100vw - 24px));
+  max-height: 56vh;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #3b5168;
+  border-radius: 4px;
+  background: rgba(23, 35, 50, 0.98);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.36);
+}
+
+.line-color-window[hidden],
+.saved-line-color-actions[hidden],
+.rename-line-color-editor[hidden],
+.saved-line-color-list[hidden] {
+  display: none !important;
+}
+
+.line-color-window-handle {
+  font-size: 11px;
+  font-weight: 700;
+  color: #d5e9fb;
+  padding: 3px 4px;
+  border: 1px solid #3e566d;
+  border-radius: 3px;
+  background: #213446;
+  cursor: move;
+  user-select: none;
+}
+
+.saved-line-color-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.saved-line-color-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #3f5468;
+  border-radius: 4px;
+  background: #1c2a38;
+  color: #d3e4f5;
+  min-height: 24px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.saved-line-color-item:hover {
+  border-color: #5e88a8;
+  background: #203245;
+}
+
+.saved-line-color-item.active {
+  border-color: #2ca36f;
+  background: #1f3a34;
+  color: #d9ffee;
+}
+
+.saved-line-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+}
+
+.saved-line-color-actions,
+.rename-line-color-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.saved-line-color-actions .tool:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rename-line-color-editor input[type="text"] {
+  min-height: 24px;
+  min-width: 120px;
+  background: #eef4fb;
+  border: 1px solid #7f97ac;
+  border-radius: 3px;
+  padding: 0 6px;
+}
+
 .level-stepper {
   display: inline-flex;
   align-items: center;
