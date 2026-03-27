@@ -494,17 +494,32 @@ body {
 
 .stage-wrap {
   padding: 0;
+  position: relative;
 }
 
+#gpuStage,
 #stage {
   width: 100%;
   max-width: 100%;
   height: auto;
   border: 0;
-  background: var(--paper);
   display: block;
   border-radius: 0;
   box-shadow: none;
+}
+
+#gpuStage {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: transparent;
+}
+
+#stage {
+  position: relative;
+  z-index: 0;
+  background: var(--paper);
 }
 
 @media (max-width: 900px) {

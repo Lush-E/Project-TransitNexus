@@ -1,5 +1,6 @@
 const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+const gpuCanvas = document.getElementById('gpuStage');
 const hint = document.getElementById('hint');
 const titleScreen = document.getElementById('titleScreen');
 const titleMainMenu = document.getElementById('titleMainMenu');
@@ -157,6 +158,564 @@ const state = {
   future: []
 };
 
+const gpu = {
+  enabled: false,
+  gl: null,
+  lineProgram: null,
+  lineBuffer: null,
+  linePosLoc: -1,
+  lineColorLoc: -1,
+  lineBaseLevelLoc: -1,
+  lineResolutionLoc: null,
+  lineMaskTexLoc: null,
+  maskTexture: null
+};
+
+let gpuTrackVertices = [];
+const gpuMaskCanvas = document.createElement('canvas');
+const gpuMaskCtx = gpuMaskCanvas.getContext('2d', { alpha: false });
+const gridTextureCanvas = document.createElement('canvas');
+const gridTextureCtx = gridTextureCanvas.getContext('2d');
+const gridTextureCache = {
+  key: '',
+  pattern: null
+};
+
+function encodeTrackLevelToMaskByte(level) {
+  const lv = clamp(normalizeTrackLevel(level), 0, 255);
+  return Math.round(lv);
+}
+
+function isGpuTrackRenderingEnabled() {
+  return gpu.enabled && Boolean(gpu.gl);
+}
+
+function normalizeHexColorToRgb01(hex) {
+  const norm = normalizeTrackColor(hex);
+  const m = /^#?([0-9a-f]{6})$/i.exec(norm);
+  if (!m) {
+    return { r: 0.15, g: 0.41, b: 0.54 };
+  }
+  const raw = m[1];
+  const v = Number.parseInt(raw, 16);
+  return {
+    r: ((v >> 16) & 0xff) / 255,
+    g: ((v >> 8) & 0xff) / 255,
+    b: (v & 0xff) / 255
+  };
+}
+
+function resetGpuTrackVertices() {
+  gpuTrackVertices = [];
+}
+
+function enqueueGpuTrackSegment(a, b, color, alpha, widthPx, baseLevelForMask = -128) {
+  if (!isGpuTrackRenderingEnabled()) {
+    return;
+  }
+
+  const sa = worldToScreen(a);
+  const sb = worldToScreen(b);
+  const dx = sb.x - sa.x;
+  const dy = sb.y - sa.y;
+  const segLen = Math.hypot(dx, dy);
+  if (segLen < 1e-4) {
+    return;
+  }
+
+  const halfW = Math.max(0.5, Number(widthPx) * 0.5);
+  const nx = (-dy / segLen) * halfW;
+  const ny = (dx / segLen) * halfW;
+  const rgb = normalizeHexColorToRgb01(color);
+  const aAlpha = clamp(Number(alpha), 0, 1);
+
+  const p1x = sa.x + nx;
+  const p1y = sa.y + ny;
+  const p2x = sb.x + nx;
+  const p2y = sb.y + ny;
+  const p3x = sb.x - nx;
+  const p3y = sb.y - ny;
+  const p4x = sa.x - nx;
+  const p4y = sa.y - ny;
+  const baseLevel = Number(baseLevelForMask);
+
+  // Two triangles per segment quad.
+  gpuTrackVertices.push(p1x, p1y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  gpuTrackVertices.push(p2x, p2y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  gpuTrackVertices.push(p3x, p3y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  gpuTrackVertices.push(p1x, p1y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  gpuTrackVertices.push(p3x, p3y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  gpuTrackVertices.push(p4x, p4y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+}
+
+function enqueueGpuFilledCircle(center, radiusWorld, color, alpha, baseLevelForMask = -128) {
+  if (!isGpuTrackRenderingEnabled()) {
+    return;
+  }
+
+  const c = worldToScreen(center);
+  const radiusPx = Math.max(0.5, Number(radiusWorld) * state.view.zoom);
+  if (radiusPx < 1e-4) {
+    return;
+  }
+
+  const rgb = normalizeHexColorToRgb01(color);
+  const aAlpha = clamp(Number(alpha), 0, 1);
+  const segCount = Math.max(10, Math.min(48, Math.ceil(radiusPx * 0.9)));
+  const baseLevel = Number(baseLevelForMask);
+
+  for (let i = 0; i < segCount; i += 1) {
+    const a0 = (Math.PI * 2 * i) / segCount;
+    const a1 = (Math.PI * 2 * (i + 1)) / segCount;
+    const p1x = c.x + Math.cos(a0) * radiusPx;
+    const p1y = c.y + Math.sin(a0) * radiusPx;
+    const p2x = c.x + Math.cos(a1) * radiusPx;
+    const p2y = c.y + Math.sin(a1) * radiusPx;
+
+    gpuTrackVertices.push(c.x, c.y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+    gpuTrackVertices.push(p1x, p1y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+    gpuTrackVertices.push(p2x, p2y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  }
+}
+
+function triangleAreaSign(a, b, c) {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function isPointInTriangle2d(p, a, b, c) {
+  const s1 = triangleAreaSign(a, b, p);
+  const s2 = triangleAreaSign(b, c, p);
+  const s3 = triangleAreaSign(c, a, p);
+  const hasNeg = s1 < -1e-9 || s2 < -1e-9 || s3 < -1e-9;
+  const hasPos = s1 > 1e-9 || s2 > 1e-9 || s3 > 1e-9;
+  return !(hasNeg && hasPos);
+}
+
+function triangulateSimplePolygon(points) {
+  if (!Array.isArray(points) || points.length < 3) {
+    return [];
+  }
+
+  const verts = points.map((p) => ({ x: Number(p.x), y: Number(p.y) }));
+  const indices = verts.map((_, i) => i);
+  const area = polygonArea(verts);
+  const isCcw = area > 0;
+  const triangles = [];
+  let guard = 0;
+
+  while (indices.length > 3 && guard < 4096) {
+    guard += 1;
+    let earFound = false;
+
+    for (let i = 0; i < indices.length; i += 1) {
+      const prevIdx = indices[(i - 1 + indices.length) % indices.length];
+      const currIdx = indices[i];
+      const nextIdx = indices[(i + 1) % indices.length];
+      const a = verts[prevIdx];
+      const b = verts[currIdx];
+      const c = verts[nextIdx];
+      const cross = triangleAreaSign(a, b, c);
+
+      if (isCcw ? cross <= 1e-9 : cross >= -1e-9) {
+        continue;
+      }
+
+      let hasInside = false;
+      for (let j = 0; j < indices.length; j += 1) {
+        const testIdx = indices[j];
+        if (testIdx === prevIdx || testIdx === currIdx || testIdx === nextIdx) {
+          continue;
+        }
+        if (isPointInTriangle2d(verts[testIdx], a, b, c)) {
+          hasInside = true;
+          break;
+        }
+      }
+      if (hasInside) {
+        continue;
+      }
+
+      triangles.push([a, b, c]);
+      indices.splice(i, 1);
+      earFound = true;
+      break;
+    }
+
+    if (!earFound) {
+      break;
+    }
+  }
+
+  if (indices.length === 3) {
+    triangles.push([verts[indices[0]], verts[indices[1]], verts[indices[2]]]);
+  }
+
+  if (triangles.length === 0 && verts.length >= 3) {
+    for (let i = 1; i < verts.length - 1; i += 1) {
+      triangles.push([verts[0], verts[i], verts[i + 1]]);
+    }
+  }
+
+  return triangles;
+}
+
+function enqueueGpuPolygonFill(points, color, alpha, baseLevelForMask = -128) {
+  if (!isGpuTrackRenderingEnabled()) {
+    return;
+  }
+
+  const triangles = triangulateSimplePolygon(points);
+  if (triangles.length === 0) {
+    return;
+  }
+
+  const rgb = normalizeHexColorToRgb01(color);
+  const aAlpha = clamp(Number(alpha), 0, 1);
+  const baseLevel = Number(baseLevelForMask);
+
+  for (const tri of triangles) {
+    const s0 = worldToScreen(tri[0]);
+    const s1 = worldToScreen(tri[1]);
+    const s2 = worldToScreen(tri[2]);
+    gpuTrackVertices.push(s0.x, s0.y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+    gpuTrackVertices.push(s1.x, s1.y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+    gpuTrackVertices.push(s2.x, s2.y, rgb.r, rgb.g, rgb.b, aAlpha, baseLevel);
+  }
+}
+
+function enqueueGpuDashedLine(a, b, dashOnWorld, dashOffWorld, color, alpha, widthPx, baseLevelForMask = -128) {
+  if (!isGpuTrackRenderingEnabled()) {
+    return;
+  }
+
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    return;
+  }
+
+  const onLen = Math.max(1e-4, Number(dashOnWorld));
+  const offLen = Math.max(0, Number(dashOffWorld));
+  const stepLen = onLen + offLen;
+  const ux = dx / len;
+  const uy = dy / len;
+
+  for (let cursor = 0; cursor < len - 1e-6; cursor += stepLen) {
+    const s = cursor;
+    const e = Math.min(len, cursor + onLen);
+    if (e - s <= 1e-6) {
+      continue;
+    }
+    const p0 = { x: a.x + ux * s, y: a.y + uy * s };
+    const p1 = { x: a.x + ux * e, y: a.y + uy * e };
+    enqueueGpuTrackSegment(p0, p1, color, alpha, widthPx, baseLevelForMask);
+  }
+}
+
+function hasHigherViaductOverlapForCircle(center, radius, baseLevel) {
+  const baseLv = normalizeTrackLevel(baseLevel);
+  if (!Array.isArray(state.viaductAreas) || state.viaductAreas.length === 0) {
+    return false;
+  }
+
+  const minX = center.x - radius;
+  const maxX = center.x + radius;
+  const minY = center.y - radius;
+  const maxY = center.y + radius;
+  let hasCandidate = false;
+
+  for (const area of state.viaductAreas) {
+    const areaLevel = normalizeTrackLevel(area.level);
+    if (areaLevel <= 0 || areaLevel <= baseLv) {
+      continue;
+    }
+
+    const poly = normalizeAreaPoints(area);
+    if (poly.length < 3) {
+      continue;
+    }
+
+    let polyMinX = Infinity;
+    let polyMaxX = -Infinity;
+    let polyMinY = Infinity;
+    let polyMaxY = -Infinity;
+    for (const p of poly) {
+      if (p.x < polyMinX) {
+        polyMinX = p.x;
+      }
+      if (p.x > polyMaxX) {
+        polyMaxX = p.x;
+      }
+      if (p.y < polyMinY) {
+        polyMinY = p.y;
+      }
+      if (p.y > polyMaxY) {
+        polyMaxY = p.y;
+      }
+    }
+
+    if (polyMaxX < minX || polyMinX > maxX || polyMaxY < minY || polyMinY > maxY) {
+      continue;
+    }
+
+    hasCandidate = true;
+    break;
+  }
+
+  if (!hasCandidate) {
+    return false;
+  }
+
+  return estimateCircleHigherAreaCoverage(center, radius, baseLv) > 0.001;
+}
+
+function drawTrackJoinCircle(center, radius, baseLevel, color, alpha = TRACK_BODY_ALPHA) {
+  if (isGpuTrackRenderingEnabled()) {
+    enqueueGpuFilledCircle(center, radius, color, alpha, normalizeTrackLevel(baseLevel));
+    return;
+  }
+  drawLevelAwareIntersectionCircle(center, radius, baseLevel, color, alpha);
+}
+
+function compileGpuShader(gl, type, source) {
+  const shader = gl.createShader(type);
+  if (!shader) {
+    return null;
+  }
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+function initGpuTrackProgram(gl) {
+  const vs = compileGpuShader(gl, gl.VERTEX_SHADER, `
+attribute vec2 a_position;
+attribute vec4 a_color;
+attribute float a_baseLevel;
+uniform vec2 u_resolution;
+varying vec4 v_color;
+varying float v_baseLevel;
+void main() {
+  vec2 zeroToOne = a_position / u_resolution;
+  vec2 zeroToTwo = zeroToOne * 2.0;
+  vec2 clipSpace = zeroToTwo - 1.0;
+  gl_Position = vec4(clipSpace * vec2(1.0, -1.0), 0.0, 1.0);
+  v_color = a_color;
+  v_baseLevel = a_baseLevel;
+}
+`);
+  const fs = compileGpuShader(gl, gl.FRAGMENT_SHADER, `
+precision mediump float;
+varying vec4 v_color;
+varying float v_baseLevel;
+uniform sampler2D u_maskTex;
+uniform vec2 u_resolution;
+void main() {
+  if (v_baseLevel > -50.0) {
+    vec2 uv = vec2(gl_FragCoord.x / u_resolution.x, 1.0 - (gl_FragCoord.y / u_resolution.y));
+    float maskLevel = floor(texture2D(u_maskTex, uv).r * 255.0 + 0.5);
+    if (maskLevel > v_baseLevel + 0.01 && maskLevel > 0.0) {
+      discard;
+    }
+  }
+  gl_FragColor = v_color;
+}
+`);
+  if (!vs || !fs) {
+    if (vs) {
+      gl.deleteShader(vs);
+    }
+    if (fs) {
+      gl.deleteShader(fs);
+    }
+    return false;
+  }
+
+  const program = gl.createProgram();
+  if (!program) {
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    return false;
+  }
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    gl.deleteProgram(program);
+    return false;
+  }
+
+  const lineBuffer = gl.createBuffer();
+  if (!lineBuffer) {
+    gl.deleteProgram(program);
+    return false;
+  }
+
+  gpu.lineProgram = program;
+  gpu.lineBuffer = lineBuffer;
+  gpu.linePosLoc = gl.getAttribLocation(program, 'a_position');
+  gpu.lineColorLoc = gl.getAttribLocation(program, 'a_color');
+  gpu.lineBaseLevelLoc = gl.getAttribLocation(program, 'a_baseLevel');
+  gpu.lineResolutionLoc = gl.getUniformLocation(program, 'u_resolution');
+  gpu.lineMaskTexLoc = gl.getUniformLocation(program, 'u_maskTex');
+  const maskTexture = gl.createTexture();
+  if (!maskTexture) {
+    return false;
+  }
+  gpu.maskTexture = maskTexture;
+  gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+  return true;
+}
+
+function rebuildGpuMaskTexture() {
+  const gl = gpu.gl;
+  if (!isGpuTrackRenderingEnabled() || !gpu.maskTexture || !gpuMaskCtx) {
+    return;
+  }
+
+  if (gpuMaskCanvas.width !== canvas.width) {
+    gpuMaskCanvas.width = canvas.width;
+  }
+  if (gpuMaskCanvas.height !== canvas.height) {
+    gpuMaskCanvas.height = canvas.height;
+  }
+
+  gpuMaskCtx.setTransform(1, 0, 0, 1, 0, 0);
+  gpuMaskCtx.fillStyle = 'rgb(0,0,0)';
+  gpuMaskCtx.fillRect(0, 0, gpuMaskCanvas.width, gpuMaskCanvas.height);
+
+  if (Array.isArray(state.viaductAreas) && state.viaductAreas.length > 0) {
+    const sortedAreas = state.viaductAreas
+      .map((area) => ({ area, lv: normalizeTrackLevel(area.level) }))
+      .filter((item) => item.lv > 0)
+      .sort((a, b) => a.lv - b.lv);
+
+    for (const item of sortedAreas) {
+      const poly = normalizeAreaPoints(item.area);
+      if (poly.length < 3) {
+        continue;
+      }
+      const levelByte = encodeTrackLevelToMaskByte(item.lv);
+      gpuMaskCtx.fillStyle = `rgb(${levelByte},0,0)`;
+      const first = worldToScreen(poly[0]);
+      gpuMaskCtx.beginPath();
+      gpuMaskCtx.moveTo(first.x, first.y);
+      for (let i = 1; i < poly.length; i += 1) {
+        const p = worldToScreen(poly[i]);
+        gpuMaskCtx.lineTo(p.x, p.y);
+      }
+      gpuMaskCtx.closePath();
+      gpuMaskCtx.fill();
+    }
+  }
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, gpu.maskTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, gpuMaskCanvas);
+}
+
+function drawGpuTrackSegments() {
+  const gl = gpu.gl;
+  if (!gpu.enabled || !gl) {
+    return;
+  }
+
+  gl.viewport(0, 0, gpuCanvas.width, gpuCanvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (!gpu.lineProgram || !gpu.lineBuffer || gpuTrackVertices.length === 0) {
+    return;
+  }
+
+  const vertices = new Float32Array(gpuTrackVertices);
+  gl.useProgram(gpu.lineProgram);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, gpu.maskTexture);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gpu.lineBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW);
+
+  const stride = 7 * Float32Array.BYTES_PER_ELEMENT;
+  gl.enableVertexAttribArray(gpu.linePosLoc);
+  gl.vertexAttribPointer(gpu.linePosLoc, 2, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(gpu.lineColorLoc);
+  gl.vertexAttribPointer(gpu.lineColorLoc, 4, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
+  gl.enableVertexAttribArray(gpu.lineBaseLevelLoc);
+  gl.vertexAttribPointer(gpu.lineBaseLevelLoc, 1, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT);
+  gl.uniform2f(gpu.lineResolutionLoc, gpuCanvas.width, gpuCanvas.height);
+  gl.uniform1i(gpu.lineMaskTexLoc, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 7);
+}
+
+function syncGpuCanvasSize() {
+  if (!gpuCanvas || !canvas) {
+    return;
+  }
+  if (gpuCanvas.width !== canvas.width) {
+    gpuCanvas.width = canvas.width;
+  }
+  if (gpuCanvas.height !== canvas.height) {
+    gpuCanvas.height = canvas.height;
+  }
+  if (gpuMaskCanvas.width !== canvas.width) {
+    gpuMaskCanvas.width = canvas.width;
+  }
+  if (gpuMaskCanvas.height !== canvas.height) {
+    gpuMaskCanvas.height = canvas.height;
+  }
+}
+
+function initGpuLayer() {
+  if (!gpuCanvas) {
+    return;
+  }
+
+  syncGpuCanvasSize();
+  const gl = gpuCanvas.getContext('webgl2', {
+    antialias: true,
+    alpha: true,
+    premultipliedAlpha: true,
+    preserveDrawingBuffer: false
+  }) || gpuCanvas.getContext('webgl', {
+    antialias: true,
+    alpha: true,
+    premultipliedAlpha: true,
+    preserveDrawingBuffer: false
+  });
+
+  if (!gl) {
+    gpu.enabled = false;
+    gpu.gl = null;
+    return;
+  }
+
+  if (!initGpuTrackProgram(gl)) {
+    gpu.enabled = false;
+    gpu.gl = null;
+    return;
+  }
+
+  gpu.enabled = true;
+  gpu.gl = gl;
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.viewport(0, 0, gpuCanvas.width, gpuCanvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+}
+
 function normalizeLineColorPresets(list) {
   if (!Array.isArray(list)) {
     return [];
@@ -237,8 +796,9 @@ function renderLineColorPresetList() {
     return;
   }
 
+  // DOM hidden is the source of truth for panel visibility.
+  state.lineColorPanelOpen = !lineColorPanel.hidden;
   syncSelectedLineColorPresetIndex();
-  lineColorPanel.hidden = !state.lineColorPanelOpen;
   if (!state.lineColorPanelOpen) {
     return;
   }
@@ -385,11 +945,24 @@ function deleteSelectedLineColorPreset() {
 }
 
 function isLineColorPanelActive() {
-  if (!state.lineColorPanelOpen || !lineColorPanel) {
+  if (!lineColorPanel || lineColorPanel.hidden) {
     return false;
   }
   const active = document.activeElement;
   return active === toggleLineColorPanelBtn || lineColorPanel.contains(active);
+}
+
+function setLineColorPanelOpen(open) {
+  if (!lineColorPanel) {
+    state.lineColorPanelOpen = false;
+    return;
+  }
+  state.lineColorPanelOpen = Boolean(open);
+  lineColorPanel.hidden = !state.lineColorPanelOpen;
+  if (!state.lineColorPanelOpen) {
+    state.lineColorEditorMode = null;
+    endLineColorPanelDrag();
+  }
 }
 
 function clampLineColorPanelPosition(left, top) {
@@ -406,7 +979,7 @@ function clampLineColorPanelPosition(left, top) {
 }
 
 function beginLineColorPanelDrag(clientX, clientY) {
-  if (!lineColorPanel || !state.lineColorPanelOpen) {
+  if (!lineColorPanel || lineColorPanel.hidden) {
     return;
   }
   const rect = lineColorPanel.getBoundingClientRect();
@@ -1931,16 +2504,22 @@ function drawViaductAreas(forcedLevel = getActiveTrackLevel()) {
   }
 
   if (activeAreas.length > 0) {
-    ctx.fillStyle = 'rgba(234, 206, 74, 0.34)';
-    ctx.beginPath();
-    for (const poly of activeAreas) {
-      ctx.moveTo(poly[0].x, poly[0].y);
-      for (let i = 1; i < poly.length; i += 1) {
-        ctx.lineTo(poly[i].x, poly[i].y);
+    if (isGpuTrackRenderingEnabled()) {
+      for (const poly of activeAreas) {
+        enqueueGpuPolygonFill(poly, '#eace4a', 0.34);
       }
-      ctx.closePath();
+    } else {
+      ctx.fillStyle = 'rgba(234, 206, 74, 0.34)';
+      ctx.beginPath();
+      for (const poly of activeAreas) {
+        ctx.moveTo(poly[0].x, poly[0].y);
+        for (let i = 1; i < poly.length; i += 1) {
+          ctx.lineTo(poly[i].x, poly[i].y);
+        }
+        ctx.closePath();
+      }
+      ctx.fill();
     }
-    ctx.fill();
   }
 
   // Explicit viaduct areas are the source of truth. Do not infer extra fills from wall pairs.
@@ -2445,21 +3024,35 @@ function drawViaductWalls(forcedLevel = getActiveTrackLevel()) {
   const allLevels = forcedLevel === null || forcedLevel === undefined;
   const activeLevel = allLevels ? 0 : normalizeTrackLevel(forcedLevel);
   const wallWidth = clamp(1.1 / Math.max(0.0001, state.view.zoom), 0.09, 0.28);
+  const useGpuTrackRendering = isGpuTrackRenderingEnabled();
+  const wallWidthPx = wallWidth * state.view.zoom;
 
-  ctx.strokeStyle = 'rgba(20, 20, 20, 0.95)';
-  ctx.lineWidth = wallWidth;
-  ctx.lineCap = 'round';
-  ctx.setLineDash([]);
+  if (!useGpuTrackRendering) {
+    ctx.strokeStyle = 'rgba(20, 20, 20, 0.95)';
+    ctx.lineWidth = wallWidth;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([]);
+  }
+
   for (const wall of state.viaductWalls) {
-    if (!allLevels && normalizeTrackLevel(wall.level) !== activeLevel) {
+    const wallLevel = normalizeTrackLevel(wall.level);
+    if (!allLevels && wallLevel !== activeLevel) {
       continue;
     }
+
+    if (useGpuTrackRendering) {
+      enqueueGpuTrackSegment(wall.a, wall.b, '#141414', 0.95, wallWidthPx);
+      continue;
+    }
+
     ctx.beginPath();
     ctx.moveTo(wall.a.x, wall.a.y);
     ctx.lineTo(wall.b.x, wall.b.y);
     ctx.stroke();
   }
-  ctx.globalAlpha = 1;
+  if (!useGpuTrackRendering) {
+    ctx.globalAlpha = 1;
+  }
 
   if (state.mode === 'viaduct' && state.draftingViaductStart && state.draftingViaductCurrent) {
     ctx.strokeStyle = 'rgba(16, 16, 16, 0.8)';
@@ -2628,6 +3221,9 @@ function drawTrackSideLines(seg, halfLength = null, center = null, alphaMul = 1,
   const ny = ux;
   const offset = getTrackSideOffset(seg);
   const sideLineWidth = clamp(1.15 / Math.max(0.0001, state.view.zoom), 0.09, 0.28);
+  const useGpuTrackRendering = isGpuTrackRenderingEnabled();
+  const sideLineWidthPx = sideLineWidth * state.view.zoom;
+  const sideAlpha = 0.88 * alphaMul;
 
   const isInlineSegment = !center || !Number.isFinite(halfLength);
   let segStartDist = 0;
@@ -2656,17 +3252,29 @@ function drawTrackSideLines(seg, halfLength = null, center = null, alphaMul = 1,
     const ey = seg.a.y + uy * endDist;
 
     if (!skipPositiveSide) {
-      ctx.beginPath();
-      ctx.moveTo(sx + nx * offset, sy + ny * offset);
-      ctx.lineTo(ex + nx * offset, ey + ny * offset);
-      ctx.stroke();
+      const a = { x: sx + nx * offset, y: sy + ny * offset };
+      const b = { x: ex + nx * offset, y: ey + ny * offset };
+      if (useGpuTrackRendering) {
+        enqueueGpuTrackSegment(a, b, TRACK_ELEVATED_SIDE_COLOR, sideAlpha, sideLineWidthPx);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
     }
 
     if (!skipNegativeSide) {
-      ctx.beginPath();
-      ctx.moveTo(sx - nx * offset, sy - ny * offset);
-      ctx.lineTo(ex - nx * offset, ey - ny * offset);
-      ctx.stroke();
+      const a = { x: sx - nx * offset, y: sy - ny * offset };
+      const b = { x: ex - nx * offset, y: ey - ny * offset };
+      if (useGpuTrackRendering) {
+        enqueueGpuTrackSegment(a, b, TRACK_ELEVATED_SIDE_COLOR, sideAlpha, sideLineWidthPx);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
     }
   };
 
@@ -2689,18 +3297,22 @@ function drawTrackSideLines(seg, halfLength = null, center = null, alphaMul = 1,
     }
   };
 
-  ctx.strokeStyle = TRACK_ELEVATED_SIDE_COLOR;
-  ctx.lineWidth = sideLineWidth;
-  ctx.lineCap = 'round';
-  ctx.setLineDash([]);
-  ctx.globalAlpha = 0.88 * alphaMul;
+  if (!useGpuTrackRendering) {
+    ctx.strokeStyle = TRACK_ELEVATED_SIDE_COLOR;
+    ctx.lineWidth = sideLineWidth;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([]);
+    ctx.globalAlpha = sideAlpha;
+  }
 
   const la = getTrackEndpointLevel(seg, 'a');
   const lb = getTrackEndpointLevel(seg, 'b');
   const isGradient = la !== lb;
   if (!isInlineSegment) {
     drawVisibleOffsetRanges(segStartDist, segEndDist);
-    ctx.globalAlpha = 1;
+    if (!useGpuTrackRendering) {
+      ctx.globalAlpha = 1;
+    }
     return;
   }
 
@@ -2715,14 +3327,18 @@ function drawTrackSideLines(seg, halfLength = null, center = null, alphaMul = 1,
         drawVisibleOffsetRanges(0, Math.max(0, len - noSideLen));
       }
 
-      ctx.globalAlpha = 1;
+      if (!useGpuTrackRendering) {
+        ctx.globalAlpha = 1;
+      }
       return;
     }
   }
 
   drawVisibleOffsetRanges(segStartDist, segEndDist);
 
-  ctx.globalAlpha = 1;
+  if (!useGpuTrackRendering) {
+    ctx.globalAlpha = 1;
+  }
 }
 
 function isDistanceInVisibleRanges(distanceOnSegment, ranges, tolerance = 1e-4) {
@@ -2916,7 +3532,7 @@ function drawLevelCrossingHints(forcedLevel = getActiveTrackLevel(), visibleRang
         continue;
       }
 
-      drawLevelAwareIntersectionCircle(p, 1.0, intersectionLevel, normalizeTrackColor(segA.color), TRACK_BODY_ALPHA);
+      drawTrackJoinCircle(p, 1.0, intersectionLevel, normalizeTrackColor(segA.color), TRACK_BODY_ALPHA);
     }
   }
 
@@ -3048,9 +3664,14 @@ function drawDeadEndMarkers(nodeCounts, forcedLevel = getActiveTrackLevel()) {
   const allLevels = forcedLevel === null || forcedLevel === undefined;
   const markerHalfLength = 1.5; // +/-1.5u from endpoint
   const activeLevel = allLevels ? 0 : normalizeTrackLevel(forcedLevel);
-  ctx.lineWidth = getPlatformWorldWidth();
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  const markerWidthWorld = getPlatformWorldWidth();
+  const useGpuTrackRendering = isGpuTrackRenderingEnabled();
+  const markerWidthPx = markerWidthWorld * state.view.zoom;
+  if (!useGpuTrackRendering) {
+    ctx.lineWidth = markerWidthWorld;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
 
   const drawAtEndpoint = (end, other, segColor) => {
     const dx = other.x - end.x;
@@ -3062,10 +3683,17 @@ function drawDeadEndMarkers(nodeCounts, forcedLevel = getActiveTrackLevel()) {
 
     const nx = -dy / len;
     const ny = dx / len;
+    const a = { x: end.x - nx * markerHalfLength, y: end.y - ny * markerHalfLength };
+    const b = { x: end.x + nx * markerHalfLength, y: end.y + ny * markerHalfLength };
+    if (useGpuTrackRendering) {
+      enqueueGpuTrackSegment(a, b, segColor, 1, markerWidthPx);
+      return;
+    }
+
     ctx.strokeStyle = normalizeTrackColor(segColor);
     ctx.beginPath();
-    ctx.moveTo(end.x - nx * markerHalfLength, end.y - ny * markerHalfLength);
-    ctx.lineTo(end.x + nx * markerHalfLength, end.y + ny * markerHalfLength);
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
     ctx.stroke();
   };
 
@@ -3442,45 +4070,60 @@ function drawGrid() {
   }
   const majorStep = minorStep * majorEvery;
 
-  const worldMinX = -state.view.offsetX / state.view.zoom;
-  const worldMaxX = (canvas.width - state.view.offsetX) / state.view.zoom;
-  const worldMinY = -state.view.offsetY / state.view.zoom;
-  const worldMaxY = (canvas.height - state.view.offsetY) / state.view.zoom;
+  const minorStepPx = minorStep * state.view.zoom;
+  const majorStepPx = majorStep * state.view.zoom;
+  const tileSize = Math.max(8, Math.min(4096, Math.round(majorStepPx)));
+  const quantMinor = Math.round(minorStepPx * 100) / 100;
+  const quantMajor = Math.round(majorStepPx * 100) / 100;
+  const cacheKey = `${quantMinor}|${quantMajor}|${tileSize}`;
 
-  const startX = Math.floor(worldMinX / minorStep) * minorStep;
-  const startY = Math.floor(worldMinY / minorStep) * minorStep;
+  if (!gridTextureCache.pattern || gridTextureCache.key !== cacheKey) {
+    gridTextureCache.key = cacheKey;
+    gridTextureCanvas.width = tileSize;
+    gridTextureCanvas.height = tileSize;
 
-  // Keep dot size stable in screen space so dots do not vanish when zoomed out.
-  const minorRadiusPx = 0.95;
-  const majorRadiusPx = 1.35;
-  const minorRadius = minorRadiusPx / Math.max(0.0001, state.view.zoom);
-  const majorRadius = majorRadiusPx / Math.max(0.0001, state.view.zoom);
-  const majorStartX = Math.floor(worldMinX / majorStep) * majorStep;
-  const majorStartY = Math.floor(worldMinY / majorStep) * majorStep;
+    if (gridTextureCtx) {
+      gridTextureCtx.clearRect(0, 0, tileSize, tileSize);
 
-  ctx.fillStyle = 'rgba(148, 148, 148, 0.74)';
-  for (let x = startX; x <= worldMaxX + minorStep; x += minorStep) {
-    for (let y = startY; y <= worldMaxY + minorStep; y += minorStep) {
-      const onMajorX = Math.abs((x / majorStep) - Math.round(x / majorStep)) < 0.0001;
-      const onMajorY = Math.abs((y / majorStep) - Math.round(y / majorStep)) < 0.0001;
-      if (onMajorX && onMajorY) {
-        continue;
+      const minorRadiusPx = 0.95;
+      const majorRadiusPx = 1.35;
+      const stepPx = Math.max(1, minorStepPx);
+
+      gridTextureCtx.fillStyle = 'rgba(148, 148, 148, 0.74)';
+      for (let x = 0; x <= tileSize + 0.5; x += stepPx) {
+        for (let y = 0; y <= tileSize + 0.5; y += stepPx) {
+          const onMajorX = Math.abs((x / majorStepPx) - Math.round(x / majorStepPx)) < 0.0001;
+          const onMajorY = Math.abs((y / majorStepPx) - Math.round(y / majorStepPx)) < 0.0001;
+          if (onMajorX && onMajorY) {
+            continue;
+          }
+          gridTextureCtx.beginPath();
+          gridTextureCtx.arc(x, y, minorRadiusPx, 0, Math.PI * 2);
+          gridTextureCtx.fill();
+        }
       }
-      ctx.beginPath();
-      ctx.arc(x, y, minorRadius, 0, Math.PI * 2);
-      ctx.fill();
+
+      gridTextureCtx.fillStyle = 'rgba(108, 108, 108, 0.92)';
+      gridTextureCtx.beginPath();
+      gridTextureCtx.arc(0, 0, majorRadiusPx, 0, Math.PI * 2);
+      gridTextureCtx.fill();
+
+      gridTextureCache.pattern = ctx.createPattern(gridTextureCanvas, 'repeat');
     }
   }
 
-  // Stronger dots every 5 steps for orientation at long zoom distances.
-  ctx.fillStyle = 'rgba(108, 108, 108, 0.92)';
-  for (let x = majorStartX; x <= worldMaxX + majorStep; x += majorStep) {
-    for (let y = majorStartY; y <= worldMaxY + majorStep; y += majorStep) {
-      ctx.beginPath();
-      ctx.arc(x, y, majorRadius, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  if (!gridTextureCache.pattern) {
+    return;
   }
+
+  const phaseX = ((state.view.offsetX % majorStepPx) + majorStepPx) % majorStepPx;
+  const phaseY = ((state.view.offsetY % majorStepPx) + majorStepPx) % majorStepPx;
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, phaseX, phaseY);
+  ctx.fillStyle = gridTextureCache.pattern;
+  ctx.fillRect(-majorStepPx, -majorStepPx, canvas.width + majorStepPx * 2, canvas.height + majorStepPx * 2);
+  ctx.restore();
 }
 
 function drawTrackLengthOverlay() {
@@ -3601,6 +4244,8 @@ function drawTracks(forcedLevel = getActiveTrackLevel(), renderOptions = {}) {
   };
   const sideRailSuppression = buildSideRailSuppressionMap();
   const visibleRangesPerTrack = state.tracks.map((seg) => getTrackVisibleDistanceRanges(seg));
+  const useGpuTrackBody = isGpuTrackRenderingEnabled();
+  const gpuTrackBodyWidthPx = getTrackWorldWidth() * state.view.zoom;
 
   // Draw elevated side rails first so result looks like: outer-line < track > outer-line.
   for (let i = 0; i < state.tracks.length; i += 1) {
@@ -3636,18 +4281,30 @@ function drawTracks(forcedLevel = getActiveTrackLevel(), renderOptions = {}) {
     const ux = dx / len;
     const uy = dy / len;
 
-    ctx.globalAlpha = TRACK_BODY_ALPHA * getSegAlpha(seg);
-    applyTrackLineStyle(seg);
+    const segAlpha = getSegAlpha(seg);
+    const segLineType = normalizeTrackLineType(seg.lineType);
+    const useGpuForSeg = useGpuTrackBody && segLineType === 'solid';
+
+    if (!useGpuForSeg) {
+      ctx.globalAlpha = TRACK_BODY_ALPHA * segAlpha;
+      applyTrackLineStyle(seg);
+    }
     for (const range of visibleRanges) {
       const startDist = Math.max(0, Math.min(len, Number(range.start)));
       const endDist = Math.max(0, Math.min(len, Number(range.end)));
       if (endDist - startDist <= 1e-6) {
         continue;
       }
-      ctx.beginPath();
-      ctx.moveTo(seg.a.x + ux * startDist, seg.a.y + uy * startDist);
-      ctx.lineTo(seg.a.x + ux * endDist, seg.a.y + uy * endDist);
-      ctx.stroke();
+      const startPoint = { x: seg.a.x + ux * startDist, y: seg.a.y + uy * startDist };
+      const endPoint = { x: seg.a.x + ux * endDist, y: seg.a.y + uy * endDist };
+      if (useGpuForSeg) {
+        enqueueGpuTrackSegment(startPoint, endPoint, seg.color, TRACK_BODY_ALPHA * segAlpha, gpuTrackBodyWidthPx);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(startPoint.x, startPoint.y);
+        ctx.lineTo(endPoint.x, endPoint.y);
+        ctx.stroke();
+      }
     }
   }
   ctx.setLineDash([]);
@@ -3668,7 +4325,7 @@ function drawTracks(forcedLevel = getActiveTrackLevel(), renderOptions = {}) {
     const aBaseLevel = getTrackEndpointLevel(seg, 'a');
     const bBaseLevel = getTrackEndpointLevel(seg, 'b');
     if (aCount >= 2) {
-      drawLevelAwareIntersectionCircle(
+      drawTrackJoinCircle(
         seg.a,
         joinRadius,
         aBaseLevel,
@@ -3677,7 +4334,7 @@ function drawTracks(forcedLevel = getActiveTrackLevel(), renderOptions = {}) {
       );
     }
     if (bCount >= 2) {
-      drawLevelAwareIntersectionCircle(
+      drawTrackJoinCircle(
         seg.b,
         joinRadius,
         bBaseLevel,
@@ -3823,14 +4480,23 @@ function drawTrackClearance() {
   const dashOn = 6 / state.view.zoom;
   const dashOff = 4 / state.view.zoom;
   const lineWidth = clamp(1.2 / state.view.zoom, 0.09, 0.4);
+  const useGpuTrackRendering = isGpuTrackRenderingEnabled();
+  const lineWidthPx = lineWidth * state.view.zoom;
+  const clearanceColor = '#2391cd';
+  const clearanceAlpha = 0.72;
 
-  ctx.strokeStyle = 'rgba(35, 145, 205, 0.72)';
-  ctx.lineWidth = lineWidth;
-  ctx.setLineDash([dashOn, dashOff]);
-  ctx.lineCap = 'round';
+  if (!useGpuTrackRendering) {
+    ctx.strokeStyle = 'rgba(35, 145, 205, 0.72)';
+    ctx.lineWidth = lineWidth;
+    ctx.setLineDash([dashOn, dashOff]);
+    ctx.lineCap = 'round';
+  }
 
   for (const seg of state.tracks) {
-    ctx.globalAlpha = isAvailableMode() ? 1 : getTrackLevelVisualAlpha(seg);
+    const segAlpha = isAvailableMode() ? 1 : getTrackLevelVisualAlpha(seg);
+    if (!useGpuTrackRendering) {
+      ctx.globalAlpha = segAlpha;
+    }
     const dx = seg.b.x - seg.a.x;
     const dy = seg.b.y - seg.a.y;
     const len = Math.hypot(dx, dy);
@@ -3843,23 +4509,39 @@ function drawTrackClearance() {
     const ox = nx * CLEARANCE_HALF_WIDTH_DOT;
     const oy = ny * CLEARANCE_HALF_WIDTH_DOT;
 
+    const plusA = { x: seg.a.x + ox, y: seg.a.y + oy };
+    const plusB = { x: seg.b.x + ox, y: seg.b.y + oy };
+    const minusA = { x: seg.a.x - ox, y: seg.a.y - oy };
+    const minusB = { x: seg.b.x - ox, y: seg.b.y - oy };
+
+    if (useGpuTrackRendering) {
+      const alpha = clearanceAlpha * segAlpha;
+      enqueueGpuDashedLine(plusA, plusB, dashOn, dashOff, clearanceColor, alpha, lineWidthPx);
+      enqueueGpuDashedLine(minusA, minusB, dashOn, dashOff, clearanceColor, alpha, lineWidthPx);
+      continue;
+    }
+
     ctx.beginPath();
-    ctx.moveTo(seg.a.x + ox, seg.a.y + oy);
-    ctx.lineTo(seg.b.x + ox, seg.b.y + oy);
+    ctx.moveTo(plusA.x, plusA.y);
+    ctx.lineTo(plusB.x, plusB.y);
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.moveTo(seg.a.x - ox, seg.a.y - oy);
-    ctx.lineTo(seg.b.x - ox, seg.b.y - oy);
+    ctx.moveTo(minusA.x, minusA.y);
+    ctx.lineTo(minusB.x, minusB.y);
     ctx.stroke();
   }
 
-  ctx.globalAlpha = 1;
-  ctx.setLineDash([]);
+  if (!useGpuTrackRendering) {
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+  }
 }
 
 function drawPlatforms() {
   const platformWorldWidth = getPlatformWorldWidth();
+  const useGpuTrackRendering = isGpuTrackRenderingEnabled();
+  const platformWidthPx = platformWorldWidth * state.view.zoom;
   const platformSegments = getPlatformSegments();
   const visibleRangesByPlatform = new Map();
   const polygonSeedSegments = [];
@@ -3876,15 +4558,21 @@ function drawPlatforms() {
   const platformPolygons = buildPlatformFillPolygons(polygonSeedSegments);
 
   // Fill enclosed platform areas when segment loops form a polygon.
-  ctx.fillStyle = 'rgba(138, 138, 138, 0.34)';
-  for (const poly of platformPolygons) {
-    ctx.beginPath();
-    ctx.moveTo(poly[0].x, poly[0].y);
-    for (let i = 1; i < poly.length; i += 1) {
-      ctx.lineTo(poly[i].x, poly[i].y);
+  if (useGpuTrackRendering) {
+    for (const poly of platformPolygons) {
+      enqueueGpuPolygonFill(poly, '#8a8a8a', 0.34);
     }
-    ctx.closePath();
-    ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(138, 138, 138, 0.34)';
+    for (const poly of platformPolygons) {
+      ctx.beginPath();
+      ctx.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i += 1) {
+        ctx.lineTo(poly[i].x, poly[i].y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 
   for (const p of state.platforms) {
@@ -3903,27 +4591,46 @@ function drawPlatforms() {
       const ux = dx / len;
       const uy = dy / len;
 
-      ctx.strokeStyle = '#8a8a8a';
-      ctx.lineWidth = platformWorldWidth;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
+      if (!useGpuTrackRendering) {
+        ctx.strokeStyle = '#8a8a8a';
+        ctx.lineWidth = platformWorldWidth;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+      }
+
+      const platformLevel = getPlatformLevel(p);
       for (const range of visibleRanges) {
         const startDist = Math.max(0, Math.min(len, Number(range.start)));
         const endDist = Math.max(0, Math.min(len, Number(range.end)));
         if (endDist - startDist <= 1e-6) {
           continue;
         }
-        ctx.beginPath();
-        ctx.moveTo(p.a.x + ux * startDist, p.a.y + uy * startDist);
-        ctx.lineTo(p.a.x + ux * endDist, p.a.y + uy * endDist);
-        ctx.stroke();
+        const a = { x: p.a.x + ux * startDist, y: p.a.y + uy * startDist };
+        const b = { x: p.a.x + ux * endDist, y: p.a.y + uy * endDist };
+        if (useGpuTrackRendering) {
+          enqueueGpuTrackSegment(a, b, '#8a8a8a', 1, platformWidthPx, platformLevel);
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
       }
       continue;
     }
 
     // Legacy rectangular platform compatibility.
-    ctx.fillStyle = '#8a8a8a';
-    ctx.fillRect(p.x, p.y, p.w, p.h);
+    if (useGpuTrackRendering) {
+      enqueueGpuPolygonFill([
+        { x: p.x, y: p.y },
+        { x: p.x + p.w, y: p.y },
+        { x: p.x + p.w, y: p.y + p.h },
+        { x: p.x, y: p.y + p.h }
+      ], '#8a8a8a', 1);
+    } else {
+      ctx.fillStyle = '#8a8a8a';
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+    }
   }
 
   if (state.mode === 'platform' && state.draftingPlatformStart && state.draftingPlatformCurrent) {
@@ -3992,7 +4699,50 @@ function drawPlatforms() {
 
 }
 
-function drawTrain(train) {
+function trainLocalToWorld(train, lx, ly) {
+  const sin = Math.sin(train.angle || 0);
+  const cos = Math.cos(train.angle || 0);
+  return {
+    x: train.x + lx * cos - ly * sin,
+    y: train.y + lx * sin + ly * cos
+  };
+}
+
+function buildTrainRectPolygon(train, x, y, w, h) {
+  return [
+    trainLocalToWorld(train, x, y),
+    trainLocalToWorld(train, x + w, y),
+    trainLocalToWorld(train, x + w, y + h),
+    trainLocalToWorld(train, x, y + h)
+  ];
+}
+
+function drawTrainGpu(train) {
+  const spacing = TRAIN_DIM.carLengthDot + TRAIN_DIM.carGapDot;
+  const carW = TRAIN_DIM.carLengthDot;
+  const carH = TRAIN_DIM.carHeightDot;
+  const strokeWidthPx = 0.26 * state.view.zoom;
+
+  for (let i = 0; i < train.cars; i += 1) {
+    const cx = i * spacing;
+    const carPoly = buildTrainRectPolygon(train, cx, -carH / 2, carW, carH);
+    enqueueGpuPolygonFill(carPoly, '#f2a386', 1);
+
+    for (let j = 0; j < 4; j += 1) {
+      const a = carPoly[j];
+      const b = carPoly[(j + 1) % 4];
+      enqueueGpuTrackSegment(a, b, '#ef7f50', 1, strokeWidthPx);
+    }
+  }
+
+  // Front icon-like head
+  enqueueGpuPolygonFill(buildTrainRectPolygon(train, -6, -TRAIN_DIM.headHeightDot / 2, TRAIN_DIM.headWidthDot, TRAIN_DIM.headHeightDot), '#151515', 1);
+  enqueueGpuPolygonFill(buildTrainRectPolygon(train, -4.5, -10.5, 24, 9.2), '#f4f4f4', 1);
+  enqueueGpuPolygonFill(buildTrainRectPolygon(train, -3.7, -8.7, 21, 5.4), '#5cc7ff', 1);
+  enqueueGpuPolygonFill(buildTrainRectPolygon(train, -4.5, 2.2, 24, 10.2), '#3f3f3f', 1);
+}
+
+function drawTrainCpu(train) {
   const spacing = TRAIN_DIM.carLengthDot + TRAIN_DIM.carGapDot;
   const carW = TRAIN_DIM.carLengthDot;
   const carH = TRAIN_DIM.carHeightDot;
@@ -4020,6 +4770,47 @@ function drawTrain(train) {
   ctx.fillStyle = '#3f3f3f';
   ctx.fillRect(-4.5, 2.2, 24, 10.2);
 
+  ctx.restore();
+}
+
+function drawTrain(train) {
+  if (isGpuTrackRenderingEnabled()) {
+    drawTrainGpu(train);
+    return;
+  }
+  drawTrainCpu(train);
+}
+
+function drawTrainSelectionHighlightGpu(train) {
+  const spacing = TRAIN_DIM.carLengthDot + TRAIN_DIM.carGapDot;
+  const totalLen = Math.max(spacing, train.cars * spacing + 8);
+  const x = -8;
+  const y = -TRAIN_DIM.headHeightDot / 2 - 2;
+  const w = totalLen;
+  const h = TRAIN_DIM.headHeightDot + 4;
+  const p1 = trainLocalToWorld(train, x, y);
+  const p2 = trainLocalToWorld(train, x + w, y);
+  const p3 = trainLocalToWorld(train, x + w, y + h);
+  const p4 = trainLocalToWorld(train, x, y + h);
+  const hiWidthPx = 0.25 * state.view.zoom;
+
+  enqueueGpuDashedLine(p1, p2, 0.7, 0.45, '#0a82dc', 0.95, hiWidthPx);
+  enqueueGpuDashedLine(p2, p3, 0.7, 0.45, '#0a82dc', 0.95, hiWidthPx);
+  enqueueGpuDashedLine(p3, p4, 0.7, 0.45, '#0a82dc', 0.95, hiWidthPx);
+  enqueueGpuDashedLine(p4, p1, 0.7, 0.45, '#0a82dc', 0.95, hiWidthPx);
+}
+
+function drawTrainSelectionHighlightCpu(train) {
+  ctx.save();
+  ctx.translate(train.x, train.y);
+  ctx.rotate(train.angle);
+  ctx.strokeStyle = 'rgba(10, 130, 220, 0.95)';
+  ctx.lineWidth = 0.25;
+  ctx.setLineDash([0.7, 0.45]);
+  const spacing = TRAIN_DIM.carLengthDot + TRAIN_DIM.carGapDot;
+  const totalLen = Math.max(spacing, train.cars * spacing + 8);
+  ctx.strokeRect(-8, -TRAIN_DIM.headHeightDot / 2 - 2, totalLen, TRAIN_DIM.headHeightDot + 4);
+  ctx.setLineDash([]);
   ctx.restore();
 }
 
@@ -4060,6 +4851,7 @@ function isTrainUnderHigherViaduct(train, trainLevel) {
 }
 
 function drawTrains() {
+  const useGpuTrackRendering = isGpuTrackRenderingEnabled();
   for (let i = 0; i < state.trains.length; i += 1) {
     const tr = state.trains[i];
     const trainLevel = getTrainLevel(tr);
@@ -4070,17 +4862,11 @@ function drawTrains() {
 
     drawTrain(tr);
     if (state.selection && state.selection.type === 'train' && state.selection.index === i) {
-      ctx.save();
-      ctx.translate(tr.x, tr.y);
-      ctx.rotate(tr.angle);
-      ctx.strokeStyle = 'rgba(10, 130, 220, 0.95)';
-      ctx.lineWidth = 0.25;
-      ctx.setLineDash([0.7, 0.45]);
-      const spacing = TRAIN_DIM.carLengthDot + TRAIN_DIM.carGapDot;
-      const totalLen = Math.max(spacing, tr.cars * spacing + 8);
-      ctx.strokeRect(-8, -TRAIN_DIM.headHeightDot / 2 - 2, totalLen, TRAIN_DIM.headHeightDot + 4);
-      ctx.setLineDash([]);
-      ctx.restore();
+      if (useGpuTrackRendering) {
+        drawTrainSelectionHighlightGpu(tr);
+      } else {
+        drawTrainSelectionHighlightCpu(tr);
+      }
     }
   }
 }
@@ -4129,6 +4915,13 @@ function drawTrackLevelPass(level) {
 }
 
 function render() {
+  resetGpuTrackVertices();
+  syncGpuCanvasSize();
+  if (gpu.enabled && gpu.gl) {
+    gpu.gl.viewport(0, 0, gpuCanvas.width, gpuCanvas.height);
+    rebuildGpuMaskTexture();
+  }
+
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = PAPER_COLOR;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -4148,6 +4941,7 @@ function render() {
     drawTrains();
   }
   ctx.restore();
+  drawGpuTrackSegments();
   drawTrackLengthOverlay();
   syncTrackControlInputs();
   updateStatusBar();
@@ -4972,11 +5766,9 @@ document.addEventListener('mouseup', () => {
 
 if (toggleLineColorPanelBtn) {
   toggleLineColorPanelBtn.addEventListener('click', () => {
-    state.lineColorPanelOpen = !state.lineColorPanelOpen;
-    if (!state.lineColorPanelOpen) {
-      state.lineColorEditorMode = null;
-      endLineColorPanelDrag();
-    } else if (lineColorPanel) {
+    const nextOpen = !(lineColorPanel && !lineColorPanel.hidden);
+    setLineColorPanelOpen(nextOpen);
+    if (state.lineColorPanelOpen && lineColorPanel) {
       lineColorPanel.focus();
     }
     renderLineColorPresetList();
@@ -4985,7 +5777,7 @@ if (toggleLineColorPanelBtn) {
 
 if (saveLineColorBtn) {
   saveLineColorBtn.addEventListener('click', () => {
-    state.lineColorPanelOpen = true;
+    setLineColorPanelOpen(true);
     state.lineColorEditorMode = 'save';
     renderLineColorPresetList();
   });
@@ -4997,7 +5789,7 @@ if (renameLineColorBtn) {
     if (state.selectedLineColorPresetIndex < 0) {
       return;
     }
-    state.lineColorPanelOpen = true;
+    setLineColorPanelOpen(true);
     state.lineColorEditorMode = 'rename';
     renderLineColorPresetList();
   });
@@ -5173,11 +5965,9 @@ window.addEventListener('keydown', (ev) => {
   }
 
   if (ev.key === 'Escape') {
-    if (state.lineColorPanelOpen) {
+    if (lineColorPanel && !lineColorPanel.hidden) {
       ev.preventDefault();
-      state.lineColorPanelOpen = false;
-      state.lineColorEditorMode = null;
-      endLineColorPanelDrag();
+      setLineColorPanelOpen(false);
       renderLineColorPresetList();
       return;
     }
@@ -5228,8 +6018,17 @@ window.addEventListener('keydown', (ev) => {
   }
 });
 
+window.addEventListener('resize', () => {
+  syncGpuCanvasSize();
+  if (gpu.enabled && gpu.gl) {
+    gpu.gl.viewport(0, 0, gpuCanvas.width, gpuCanvas.height);
+  }
+  render();
+});
+
 // Start with a composition close to the sample image scale.
 resetViewToDefault();
+initGpuLayer();
 loadLineColorPresetsFromLocal();
 renderLineColorPresetList();
 commitHistory();
